@@ -1,0 +1,8 @@
+Model,Dimension,Weight,Precision,Recall,F1,FP Rate,TP,FP,FN,TN,Avg Latency (ms)
+gpt-5.4-mini,Idiomatic,5%,1.0,0.5,0.67,0.0,1,0,1,1,1467
+gpt-5.4-mini,Correctness,20%,1.0,1.0,1.0,0.0,3,0,0,1,2076
+gpt-5.4-mini,Performance,10%,1.0,1.0,1.0,0.0,2,0,0,1,2112
+gpt-5.4-mini,Testability,15%,0.67,1.0,0.8,1.0,2,1,0,0,2252
+gpt-5.4-mini,Readability,15%,1.0,0.5,0.67,0.0,1,0,1,1,1384
+gpt-5.4-mini,Design,15%,1.0,1.0,1.0,0.0,2,0,0,1,1785
+gpt-5.4-mini,Security,20%,1.0,1.0,1.0,0.0,3,0,0,1,1907
