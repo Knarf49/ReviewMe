@@ -22,6 +22,8 @@ from openai import OpenAI
 from tabulate import tabulate
 from tqdm import tqdm
 
+import skills
+
 load_dotenv()
 
 # ── Config ───────────────────────────────────────────────────
@@ -179,7 +181,12 @@ Severity calibration:
 - critical: data loss, security breach, crash in production
 - high: nil panic, race condition, error silently ignored, IDOR, hard-coded secret
 - medium: poor naming, god function, over-engineering, missing edge case test
-- low: style issues, minor idiom violations, non-blocking improvements"""
+- low: style issues, minor idiom violations, non-blocking improvements
+
+You have access to two tools for fetching reference knowledge:
+- list_skills(): see available skill packs (e.g. framework-specific guidance).
+- fetch_skill(name, file?): read a skill pack's content.
+Call them ONLY when the snippet's language/framework matches a skill and the extra context would change your verdict. After any tool use, return the final JSON object as your last message — no extra prose."""
 
 
 def build_user_prompt(tc: TestCase) -> str:
@@ -210,19 +217,74 @@ class EvalResult:
     parse_error: bool = False
 
 
+MAX_TOOL_ITERATIONS = 4
+
+
 def call_model(model: str, tc: TestCase, max_retries: int = 3) -> tuple[str, float]:
+    base_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": build_user_prompt(tc)},
+    ]
+
     for attempt in range(max_retries):
         try:
             start = time.time()
+            messages = [dict(m) for m in base_messages]
+
+            for _ in range(MAX_TOOL_ITERATIONS):
+                response = client.chat.completions.create(
+                    model=model,
+                    temperature=TEMPERATURE,
+                    max_completion_tokens=800,
+                    response_format={"type": "json_object"},
+                    tools=skills.TOOL_SCHEMAS,
+                    messages=messages,
+                )
+                msg = response.choices[0].message
+                tool_calls = getattr(msg, "tool_calls", None)
+
+                if not tool_calls:
+                    latency = (time.time() - start) * 1000
+                    return msg.content, latency
+
+                messages.append({
+                    "role":       "assistant",
+                    "content":    msg.content or "",
+                    "tool_calls": [
+                        {
+                            "id":   tc_call.id,
+                            "type": "function",
+                            "function": {
+                                "name":      tc_call.function.name,
+                                "arguments": tc_call.function.arguments or "{}",
+                            },
+                        }
+                        for tc_call in tool_calls
+                    ],
+                })
+
+                for tc_call in tool_calls:
+                    try:
+                        args = json.loads(tc_call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = skills.dispatch(tc_call.function.name, args)
+                    messages.append({
+                        "role":         "tool",
+                        "tool_call_id": tc_call.id,
+                        "content":      result,
+                    })
+
+            # tool budget exhausted — force a final answer with no tools
             response = client.chat.completions.create(
                 model=model,
                 temperature=TEMPERATURE,
                 max_completion_tokens=800,
                 response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": build_user_prompt(tc)},
-                ],
+                messages=messages + [{
+                    "role":    "user",
+                    "content": "Return the final JSON object now. Do not call any more tools.",
+                }],
             )
             latency = (time.time() - start) * 1000
             return response.choices[0].message.content, latency
@@ -502,6 +564,10 @@ def print_results(metrics_df: pd.DataFrame, overall_df: pd.DataFrame):
 
 def main():
     test_suite = load_test_cases()
+
+    skills.init()
+    catalog = skills.list_skills()
+    print(f"Loaded {len(catalog)} skill pack(s): {[s['name'] for s in catalog]}")
 
     print(f"\nStarting eval: {len(MODELS)} models x {len(test_suite)} cases x {RUNS_PER_CASE} runs")
     print(f"Total API calls: {len(MODELS) * len(test_suite) * RUNS_PER_CASE}")

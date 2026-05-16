@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 data.db
 results/
+skills_cache/
 *.egg-info/
 dist/
 build/
