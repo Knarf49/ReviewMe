@@ -97,7 +97,9 @@ def rel_path(path_str: str, root: Path) -> str:
         return path_str.replace("\\", "/")
 
 
-def parse_json(text: str):
+def parse_json(text: str | None):
+    if not text:
+        return None
     try:
         return json.loads(text)
     except json.JSONDecodeError:

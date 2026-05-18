@@ -8,3 +8,6 @@ skills_cache/
 *.egg-info/
 dist/
 build/
+.claude/
+.gradio_stderr.log
+.gradio_stdout.log

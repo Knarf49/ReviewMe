@@ -1,7 +1,8 @@
 # ============================================================
-# Gradio UI — two modes
-#   Tab 1 "Ask question"      — chat code review with skill tools
-#   Tab 2 "Review my project" — paste GitHub link → stack detect → AI review
+# Gradio UI — three modes
+#   Tab 1 "Ask question"               — chat code review with skill tools
+#   Tab 2 "Review my project"          — paste GitHub link → stack detect → AI review
+#   Tab 3 "Full pipeline (Layers 0-4)" — local path / clone → 0/1/2 + 3 + 4 (if JD)
 # ============================================================
 # Run:
 #   .venv\Scripts\activate
@@ -12,22 +13,24 @@
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 import traceback
+from pathlib import Path
 from typing import Iterator
 
 import gradio as gr
 from dotenv import load_dotenv
-from openai import OpenAI
 
 import skills
 import detect_stack as ds
+from llm_client import DEFAULT_MODELS, PROVIDERS, get_sync_client, resolve_model
 
 load_dotenv()
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-MODEL          = "gpt-5.4-mini"
+DEFAULT_PROVIDER = (os.environ.get("LLM_PROVIDER") or "openai").lower()
 TEMPERATURE    = 0
 MAX_TOKENS     = 800
 MAX_TOOL_ITER  = 4
@@ -70,7 +73,11 @@ def _msg(role: str, content: str, title: str | None = None, status: str = "done"
     return m
 
 
-def _tool_loop_stream(oa_messages: list[dict]) -> Iterator[tuple[str, dict | None, str]]:
+def _tool_loop_stream(
+    oa_messages: list[dict],
+    provider: str = DEFAULT_PROVIDER,
+    model: str | None = None,
+) -> Iterator[tuple[str, dict | None, str]]:
     """Generator yielding ('event_kind', payload, final_text).
 
     event_kind:
@@ -82,10 +89,12 @@ def _tool_loop_stream(oa_messages: list[dict]) -> Iterator[tuple[str, dict | Non
     called: set[str] = set()
     fetched_local = False
     force_search = False
+    client = get_sync_client(provider)
+    eff_model = resolve_model(provider, model)
 
     for step in range(MAX_TOOL_ITER):
         kwargs = dict(
-            model=MODEL,
+            model=eff_model,
             temperature=TEMPERATURE,
             max_completion_tokens=MAX_TOKENS,
             tools=skills.TOOL_SCHEMAS,
@@ -164,7 +173,12 @@ def _tool_loop_stream(oa_messages: list[dict]) -> Iterator[tuple[str, dict | Non
 
 # ── Tab 1: chat ──────────────────────────────────────────────
 
-def chat_fn(user_msg: str, history: list[dict]) -> Iterator[list[dict]]:
+def chat_fn(
+    user_msg: str,
+    history: list[dict],
+    provider: str = DEFAULT_PROVIDER,
+    model: str = "",
+) -> Iterator[list[dict]]:
     oa_messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in history:
         if m.get("metadata"):
@@ -177,7 +191,9 @@ def chat_fn(user_msg: str, history: list[dict]) -> Iterator[list[dict]]:
 
     try:
         pending_idx: dict[str, int] = {}
-        for kind, payload, text in _tool_loop_stream(oa_messages):
+        for kind, payload, text in _tool_loop_stream(
+            oa_messages, provider=provider, model=model or None,
+        ):
             if kind == "tool_pending":
                 new_msgs.append(_msg(
                     "assistant",
@@ -304,7 +320,11 @@ Below are {len(file_blobs)} key source files (truncated). Identify the top 3-5 i
 {files_blob}"""
 
 
-def review_project_stream(url: str) -> Iterator[str]:
+def review_project_stream(
+    url: str,
+    provider: str = DEFAULT_PROVIDER,
+    model: str = "",
+) -> Iterator[str]:
     if not url.strip():
         yield "Enter a GitHub URL."
         return
@@ -362,7 +382,9 @@ def review_project_stream(url: str) -> Iterator[str]:
 
     start = time.time()
     try:
-        for kind, payload, text in _tool_loop_stream(oa_messages):
+        for kind, payload, text in _tool_loop_stream(
+            oa_messages, provider=provider, model=model or None,
+        ):
             if kind == "tool_pending":
                 log += f"- tool call: `{payload['name']}({json.dumps(payload['args'])})`\n"
                 yield log
@@ -378,6 +400,348 @@ def review_project_stream(url: str) -> Iterator[str]:
                 return
     except Exception as e:
         yield log + f"\n**Model error**\n```\n{e}\n{traceback.format_exc()}\n```"
+
+
+# ── Tab 3: full pipeline review (Layers 0-3) ─────────────────
+
+def _format_layer3_md(l3: dict) -> str:
+    parts = ["## Layer 3 — AI Context Review"]
+    parts.append(
+        f"_Model: `{l3.get('model','?')}` · "
+        f"{l3.get('elapsed_ms', '?')} ms · "
+        f"dropped {len(l3.get('dropped_finding_ids', []))} bogus finding_ids_\n"
+    )
+
+    a = l3.get("call_a_architecture") or {}
+    parts.append("### Call A — Architecture")
+    if "error" in a:
+        parts.append(f"_error: {a['error']}_")
+    else:
+        if a.get("scale_assessment"):
+            parts.append(f"**Scale:** {a['scale_assessment']}")
+        if a.get("patterns_observed"):
+            parts.append("**Patterns:** " + ", ".join(a["patterns_observed"]))
+        if a.get("anti_patterns"):
+            parts.append("**Anti-patterns:**")
+            for ap in a["anti_patterns"]:
+                parts.append(
+                    f"- `{ap.get('evidence_file','?')}` — **{ap.get('name','?')}**: "
+                    f"{ap.get('explanation','')}"
+                )
+        if a.get("recommendations"):
+            parts.append("**Recommendations:**")
+            for r in a["recommendations"]:
+                parts.append(f"- {r}")
+
+    b = l3.get("call_b_jobfit")
+    if b is not None:
+        parts.append("\n### Call B — Job Fit")
+        if "error" in b:
+            parts.append(f"_error: {b['error']}_")
+        else:
+            if b.get("covered_skills"):
+                parts.append("**Covered:**")
+                for s in b["covered_skills"]:
+                    parts.append(f"- {s.get('skill','?')} — `{s.get('evidence_file','?')}`")
+            if b.get("missing_skills"):
+                parts.append("**Missing:**")
+                for s in b["missing_skills"]:
+                    parts.append(f"- {s.get('skill','?')} — _{s.get('why_jd_needs_it','')}_")
+            if b.get("next_project_suggestion"):
+                parts.append(f"**Next project:** {b['next_project_suggestion']}")
+    else:
+        parts.append("\n### Call B — Job Fit\n_skipped (no JD provided)_")
+
+    c = l3.get("call_c_teaching") or {}
+    parts.append("\n### Call C — Teaching")
+    if "error" in c:
+        parts.append(f"_error: {c['error']}_")
+    else:
+        for e in c.get("explanations") or []:
+            parts.append(
+                f"- **[{e.get('severity','?')}]** `{e.get('finding_id','?')}` "
+                f"→ {e.get('why_it_matters','')} _(ref: {e.get('reference','n/a')})_"
+            )
+        if c.get("overall_tone_note"):
+            parts.append(f"\n_{c['overall_tone_note']}_")
+    return "\n\n".join(parts)
+
+
+def _format_layer4_md(s: dict) -> str:
+    if not s:
+        return "_(empty suggestion)_"
+    if "error" in s:
+        return f"**Error from model:** {s.get('error')}\n\n```\n{s.get('raw','')}\n```"
+
+    parts: list[str] = []
+    title = s.get("project_title", "(untitled project)")
+    parts.append(f"# {title}")
+    if s.get("problem_statement"):
+        parts.append(f"**Problem:** {s['problem_statement']}")
+
+    if s.get("must_have_features"):
+        parts.append("## Must-have features")
+        for f in s["must_have_features"]:
+            parts.append(f"- {f}")
+
+    if s.get("stretch_goals"):
+        parts.append("## Stretch goals")
+        for f in s["stretch_goals"]:
+            parts.append(f"- {f}")
+
+    if s.get("recommended_stack"):
+        parts.append("## Recommended stack")
+        for t in s["recommended_stack"]:
+            t = str(t)
+            if " — because " in t:
+                tech, reason = t.split(" — because ", 1)
+                parts.append(f"- **{tech.strip()}** — because {reason.strip()}")
+            elif " - because " in t:
+                tech, reason = t.split(" - because ", 1)
+                parts.append(f"- **{tech.strip()}** — because {reason.strip()}")
+            else:
+                parts.append(f"- **{t}**")
+
+    skills = s.get("skills_demonstrated") or []
+    if skills:
+        parts.append("## Skills the JD asked for")
+        parts.append("| Skill | Quoted from JD |")
+        parts.append("|---|---|")
+        for row in skills:
+            sk = (row.get("skill") or "").replace("|", "\\|")
+            fj = (row.get("from_jd") or "").replace("|", "\\|")
+            parts.append(f"| {sk} | _{fj}_ |")
+
+    rubric = s.get("success_rubric") or []
+    if rubric:
+        parts.append("## How a reviewer will grade it")
+        parts.append("| Criterion | Measure |")
+        parts.append("|---|---|")
+        for row in rubric:
+            cr = (row.get("criterion") or "").replace("|", "\\|")
+            me = (row.get("measure") or "").replace("|", "\\|")
+            parts.append(f"| {cr} | {me} |")
+
+    inspired = s.get("inspired_by") or []
+    if inspired:
+        parts.append("## Inspired by")
+        parts.append("| Feature | Sources |")
+        parts.append("|---|---|")
+        for row in inspired:
+            feat = (row.get("feature") or "").replace("|", "\\|")
+            ids = ", ".join(row.get("source_ids") or [])
+            parts.append(f"| {feat} | {ids} |")
+
+    sources = s.get("research_sources") or []
+    if sources:
+        parts.append("## Research sources")
+        parts.append("| ID | Platform | Title | Pain point | Detected stack |")
+        parts.append("|---|---|---|---|---|")
+        for src in sources:
+            sid = (src.get("id") or "").replace("|", "\\|")
+            plat = (src.get("platform") or "").replace("|", "\\|")
+            title = (src.get("title") or "").replace("|", "\\|")
+            url = src.get("url") or ""
+            pp = (src.get("pain_point") or "").replace("|", "\\|")
+            title_md = f"[{title}]({url})" if url else title
+            gs = src.get("github_stack") or {}
+            chips: list[str] = []
+            for bucket in ("frameworks", "languages", "databases", "infra"):
+                chips.extend(gs.get(bucket) or [])
+            stack_md = ", ".join(chips[:6]).replace("|", "\\|") if chips else ""
+            parts.append(
+                f"| {sid} | {plat} | {title_md} | {pp} | {stack_md} |"
+            )
+
+    return "\n\n".join(parts)
+
+
+def _shallow_clone(url: str, dest: Path) -> None:
+    if not shutil.which("git"):
+        raise RuntimeError("git not on PATH — cannot clone remote repo")
+    proc = subprocess.run(
+        ["git", "clone", "--depth", "1", url, str(dest)],
+        capture_output=True, text=True, timeout=180,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git clone failed: {proc.stderr.strip()[:300]}")
+
+
+def full_review_stream(
+    target: str,
+    jd: str,
+    provider: str = DEFAULT_PROVIDER,
+    model: str = "",
+) -> Iterator[str]:
+    target = (target or "").strip()
+    jd = jd or ""
+    eff_model = model or None
+    if not target and not jd.strip():
+        yield "Enter a local path / GitHub URL, or paste a JD, or both."
+        return
+
+    # JD-only mode: skip Layers 0/1/2/3, run Layer 4 directly
+    if not target:
+        log = (
+            "### JD-only mode\n"
+            "_No repo provided — skipping Layers 0/1/2/3, running Layer 4 only._\n\n"
+            "### Step 4a — Layer 4a (Web Research)\n"
+            "_searching Reddit + Hacker News for related pain points…_\n"
+            "\n### Step 4 — Layer 4 (Project Suggestion from JD)\n"
+            "_calling model…_\n"
+        )
+        yield log
+
+        from project_suggester import log_run as log_run_l4
+        from project_suggester import run_layer4_sync
+
+        try:
+            layer4 = run_layer4_sync(jd, provider=provider, model=eff_model)
+            log = log.replace(
+                "_searching Reddit + Hacker News for related pain points…_\n", "",
+            )
+            log = log.replace("_calling model…_\n", "")
+            r = layer4.research
+            platforms = sorted({s.platform for s in r.sources if s.platform})
+            log += (
+                f"\n**Research:** {len(r.sources)} source(s) from "
+                f"{', '.join(platforms) if platforms else 'no platforms'} · "
+                f"queries: {', '.join(f'`{q}`' for q in r.queries) or 'none'}\n"
+            )
+            log += "\n" + _format_layer4_md(layer4.suggestion)
+            try:
+                rec4 = log_run_l4(jd, layer4,
+                                  log_root=Path("results/layer4_logs"))
+                log += (
+                    f"\n\n---\n**Layer 4 eval log saved** · "
+                    f"`run_id={rec4['run_id']}` · "
+                    f"{layer4.elapsed_ms} ms · "
+                    f"{layer4.usage.prompt_tokens}+"
+                    f"{layer4.usage.completion_tokens} tokens\n"
+                    f"- input: `{rec4['input_path']}`\n"
+                    f"- output: `{rec4['output_path']}`\n"
+                    f"- research: `{rec4['research_path']}`\n"
+                    f"- index: `results/layer4_logs/index.jsonl`"
+                )
+            except Exception as log_err:
+                log += f"\n\n_layer4 log_run failed: {log_err}_"
+        except Exception as l4_err:
+            log += f"\n\n**Layer 4 error**\n```\n{l4_err}\n```"
+        yield log
+        return
+
+    log = "### Step 1 — locate project\n"
+    yield log
+
+    tmp: tempfile.TemporaryDirectory | None = None
+    try:
+        if target.startswith(("http://", "https://", "git@")):
+            tmp = tempfile.TemporaryDirectory(prefix="reviewme_")
+            root = Path(tmp.name) / "repo"
+            log += f"Cloning `{target}` …\n"
+            yield log
+            _shallow_clone(target, root)
+        else:
+            root = Path(target).resolve()
+            if not root.exists():
+                yield log + f"\n**Error**: path not found: `{root}`"
+                return
+        log += f"Project root: `{root}`\n\n### Step 2 — run Layers 0/1/2\n"
+        yield log
+
+        from analyze import analyze
+        from ai_reviewer import run_layer3_sync, log_run
+
+        analysis = analyze(root, include_deps=True)
+        l1 = analysis.get("layer1_static", {}).get("summary", {})
+        l2 = analysis.get("layer2_ast", {}).get("summary", {})
+        l0 = analysis.get("layer0_deps", {}).get("summary", {})
+        log += (
+            f"- Layer 0 vulns: {l0.get('total_vulns', 0)}\n"
+            f"- Layer 1 findings: {l1.get('total', 0)} "
+            f"(by sev: {l1.get('by_severity', {})})\n"
+            f"- Layer 2 files: {analysis.get('layer2_ast', {}).get('file_count', 0)} "
+            f"max_cc={l2.get('max_cyclomatic', 0)}\n\n"
+            "### Step 3 — Layer 3 (AI Context Review)\n_running 3 calls in parallel…_\n"
+        )
+        yield log
+
+        layer3 = run_layer3_sync(analysis, jd, provider=provider, model=eff_model)
+        log = log.replace("_running 3 calls in parallel…_\n", "")
+        log += "\n" + _format_layer3_md(layer3.to_dict())
+
+        try:
+            rec = log_run(analysis, jd, layer3, target=str(target),
+                          log_root=Path("results/layer3_logs"))
+            log += (
+                f"\n\n---\n**Layer 3 eval log saved** · `run_id={rec['run_id']}`\n"
+                f"- input: `{rec['input_path']}`\n"
+                f"- output: `{rec['output_path']}`\n"
+                f"- index: `results/layer3_logs/index.jsonl`"
+            )
+        except Exception as log_err:
+            log += f"\n\n_layer3 log_run failed: {log_err}_"
+        yield log
+
+        # ── Layer 4 — project suggestion (only if JD provided) ──
+        if jd.strip():
+            log += (
+                "\n\n### Step 4a — Layer 4a (Web Research)\n"
+                "_searching Reddit + Hacker News for related pain points…_\n"
+                "\n### Step 4 — Layer 4 (Project Suggestion from JD)\n"
+                "_calling model…_\n"
+            )
+            yield log
+
+            from project_suggester import log_run as log_run_l4
+            from project_suggester import run_layer4_sync
+
+            try:
+                layer4 = run_layer4_sync(jd, provider=provider, model=eff_model)
+                log = log.replace(
+                    "_searching Reddit + Hacker News for related pain points…_\n",
+                    "",
+                )
+                log = log.replace("_calling model…_\n", "")
+                r = layer4.research
+                platforms = sorted({s.platform for s in r.sources if s.platform})
+                log += (
+                    f"\n**Research:** {len(r.sources)} source(s) from "
+                    f"{', '.join(platforms) if platforms else 'no platforms'} · "
+                    f"queries: {', '.join(f'`{q}`' for q in r.queries) or 'none'}\n"
+                )
+                log += "\n" + _format_layer4_md(layer4.suggestion)
+                try:
+                    rec4 = log_run_l4(jd, layer4,
+                                      log_root=Path("results/layer4_logs"))
+                    log += (
+                        f"\n\n---\n**Layer 4 eval log saved** · "
+                        f"`run_id={rec4['run_id']}` · "
+                        f"{layer4.elapsed_ms} ms · "
+                        f"{layer4.usage.prompt_tokens}+"
+                        f"{layer4.usage.completion_tokens} tokens\n"
+                        f"- input: `{rec4['input_path']}`\n"
+                        f"- output: `{rec4['output_path']}`\n"
+                        f"- research: `{rec4['research_path']}`\n"
+                        f"- index: `results/layer4_logs/index.jsonl`"
+                    )
+                except Exception as log_err:
+                    log += f"\n\n_layer4 log_run failed: {log_err}_"
+            except Exception as l4_err:
+                log += f"\n\n**Layer 4 error**\n```\n{l4_err}\n```"
+            yield log
+        else:
+            log += (
+                "\n\n### Step 4 — Layer 4 (Project Suggestion)\n"
+                "_skipped (no JD provided)_"
+            )
+            yield log
+
+    except Exception as e:
+        yield log + f"\n**ERROR**\n```\n{e}\n{traceback.format_exc()}\n```"
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
 
 
 # ── UI ───────────────────────────────────────────────────────
@@ -405,18 +769,66 @@ EXAMPLES = [
     ],
 ]
 
+MODEL_CHOICES = [
+    "",  # blank = use default for selected provider
+    # OpenAI
+    "gpt-5.4-mini",
+    "gpt-4o-mini",
+    "gpt-4o",
+    "o3-mini",
+    # Ollama — local (verified: tool_calls + JSON mode + tool loop all pass)
+    "qwen3:8b",          # 5.2GB · best balance, fits VRAM
+    "qwen3:4b",          # 2.5GB · smaller
+    "qwen3.5:0.8b",      # 1.0GB · tiny but functional
+    # Ollama — cloud (Ollama Turbo, no subscription required)
+    "gpt-oss:120b-cloud",
+    "gpt-oss:20b-cloud",
+]
+
+
+def _provider_row(
+    prefix: str, model_as_dropdown: bool = False
+) -> tuple[gr.Dropdown, gr.Component]:
+    """Build a shared provider+model row. Returns the two components."""
+    with gr.Row():
+        prov = gr.Dropdown(
+            choices=list(PROVIDERS),
+            value=DEFAULT_PROVIDER if DEFAULT_PROVIDER in PROVIDERS else "openai",
+            label=f"{prefix} provider",
+            scale=1,
+        )
+        if model_as_dropdown:
+            mdl = gr.Dropdown(
+                choices=MODEL_CHOICES,
+                value="",
+                label=f"{prefix} model (blank = default for provider)",
+                allow_custom_value=True,
+                scale=2,
+            )
+        else:
+            mdl = gr.Textbox(
+                label=f"{prefix} model (blank = default)",
+                placeholder=f"openai → {DEFAULT_MODELS['openai']} · ollama → {DEFAULT_MODELS['ollama']}",
+                scale=2,
+            )
+    return prov, mdl
+
+
 with gr.Blocks(title="ReviewMe — skill-aware code reviewer") as demo:
     gr.Markdown("# ReviewMe — skill-aware code reviewer")
     gr.Markdown(
-        "Powered by `gpt-5.4-mini` with skill packs: "
-        f"**{', '.join(s['name'] for s in skills.list_skills())}**"
+        "Pick **OpenAI** (cloud) or **Ollama** (local) per tab. "
+        "Defaults: OpenAI `gpt-5.4-mini`, Ollama `qwen3:8b`. "
+        f"Skill packs: **{', '.join(s['name'] for s in skills.list_skills())}**"
     )
 
     with gr.Tabs():
         # ── Tab 1 ───────────────────────────────────────────
         with gr.Tab("Ask question"):
+            t1_provider, t1_model = _provider_row("Tab 1")
             gr.ChatInterface(
                 fn=chat_fn,
+                additional_inputs=[t1_provider, t1_model],
                 description="Paste code. Model reviews with skill access. Tool calls render inline.",
                 examples=EXAMPLES,
                 cache_examples=False,
@@ -426,8 +838,9 @@ with gr.Blocks(title="ReviewMe — skill-aware code reviewer") as demo:
         with gr.Tab("Review my project"):
             gr.Markdown(
                 "Paste a public GitHub URL. The tool detects the stack (no AI), "
-                "then sends key files to `gpt-5.4-mini` for review with version-aware skill use."
+                "then sends key files to the selected model for review with version-aware skill use."
             )
+            t2_provider, t2_model = _provider_row("Tab 2")
             with gr.Row():
                 url_in     = gr.Textbox(
                     label="GitHub URL or `owner/repo`",
@@ -436,7 +849,11 @@ with gr.Blocks(title="ReviewMe — skill-aware code reviewer") as demo:
                 )
                 review_btn = gr.Button("Detect & Review", variant="primary", scale=1)
             review_out = gr.Markdown(label="Output")
-            review_btn.click(review_project_stream, inputs=url_in, outputs=review_out)
+            review_btn.click(
+                review_project_stream,
+                inputs=[url_in, t2_provider, t2_model],
+                outputs=review_out,
+            )
             gr.Examples(
                 examples=[
                     ["https://github.com/vercel/next.js/tree/canary/examples/blog-starter"],
@@ -444,6 +861,33 @@ with gr.Blocks(title="ReviewMe — skill-aware code reviewer") as demo:
                     ["https://github.com/vercel/next.js/tree/v14.2.15/examples/blog-starter"],
                 ],
                 inputs=url_in,
+            )
+
+        # ── Tab 3 ───────────────────────────────────────────
+        with gr.Tab("Full pipeline (Layers 0-4)"):
+            gr.Markdown(
+                "Runs Layer 0 (deps) + Layer 1 (static) + Layer 2 (AST) on disk, "
+                "then Layer 3 (3 parallel AI calls: architecture, job-fit, teaching). "
+                "If a JD is provided, also runs Layer 4 (project suggestion from JD + web research). "
+                "**JD-only mode**: leave repo blank to run Layer 4 alone. "
+                "Layer 3 **never decides severity** — Layer 1 is authoritative; AI only explains."
+            )
+            t3_provider, t3_model = _provider_row("Tab 3", model_as_dropdown=True)
+            full_target = gr.Textbox(
+                label="Local path OR GitHub URL (optional — leave blank for JD-only Layer 4)",
+                placeholder=r"C:\ReviewMe   or   https://github.com/owner/repo   (or blank)",
+            )
+            full_jd = gr.Textbox(
+                label="Job Description (optional with repo · required for JD-only mode)",
+                placeholder="Paste the JD here. Leave blank to skip Layer 4; paste alone for JD-only Layer 4.",
+                lines=6,
+            )
+            full_btn = gr.Button("Run full pipeline", variant="primary")
+            full_out = gr.Markdown(label="Output")
+            full_btn.click(
+                full_review_stream,
+                inputs=[full_target, full_jd, t3_provider, t3_model],
+                outputs=full_out,
             )
 
 

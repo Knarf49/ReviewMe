@@ -76,6 +76,10 @@ def main():
     ap.add_argument("--out", default="results")
     ap.add_argument("--no-deps", action="store_true",
                     help="skip Layer 0 (dep scan)")
+    ap.add_argument("--with-ai", action="store_true",
+                    help="run Layer 3 (AI context review) after Layers 0-2")
+    ap.add_argument("--jd", default="",
+                    help="path to job description text file (enables Call B)")
     args = ap.parse_args()
 
     root = Path(args.path).resolve()
@@ -92,6 +96,29 @@ def main():
     out_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print_summary(report)
     print(f"\nWrote {out_file}")
+
+    if args.with_ai:
+        from ai_reviewer import run_layer3_sync
+        jd = ""
+        if args.jd:
+            jd_path = Path(args.jd).resolve()
+            if not jd_path.exists():
+                print(f"JD not found: {jd_path}", file=sys.stderr)
+                sys.exit(2)
+            jd = jd_path.read_text(encoding="utf-8")
+
+        print("\n  Layer 3 — AI Context Review (running…)")
+        layer3 = run_layer3_sync(report, jd)
+        report["layer3_ai"] = layer3.to_dict()
+        l3_file = out_dir / f"layer3_{root.name}.json"
+        l3_file.write_text(json.dumps(layer3.to_dict(), indent=2), encoding="utf-8")
+
+        calls = ["A"] + (["B"] if layer3.call_b is not None else []) + ["C"]
+        explanations = (layer3.call_c.get("explanations") or []) if isinstance(layer3.call_c, dict) else []
+        print(f"    Model: {layer3.model}  Elapsed: {layer3.elapsed_ms} ms")
+        print(f"    Calls: {'/'.join(calls)}  Explanations: {len(explanations)}  "
+              f"Dropped bogus finding_ids: {len(layer3.dropped_finding_ids)}")
+        print(f"\nWrote {l3_file}")
 
 
 if __name__ == "__main__":
