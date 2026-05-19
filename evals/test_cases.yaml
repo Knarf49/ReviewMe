@@ -1,0 +1,767 @@
+- id: SEC-001
+  dimension: Security
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func getUser(db *sql.DB, username string) (*User, error) {
+        query := "SELECT * FROM users WHERE username = '" + username + "'"
+        row := db.QueryRow(query)
+        // ...
+    }
+  ground_truth:
+    issue: SQL Injection via string concatenation
+    line: 2
+    severity: critical
+    standard: OWASP A03:2021
+    fix: parameterized query
+- id: SEC-002
+  dimension: Security
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func connectDB() *sql.DB {
+        dsn := "admin:SuperSecret123@tcp(localhost:3306)/mydb"
+        db, _ := sql.Open("mysql", dsn)
+        return db
+    }
+  ground_truth:
+    issue: Hardcoded credentials
+    line: 2
+    severity: critical
+    standard: OWASP Secure Coding Practices
+    fix: environment variable or secrets manager
+- id: SEC-003
+  dimension: Security
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func getOrder(w http.ResponseWriter, r *http.Request) {
+        orderID := r.URL.Query().Get("order_id")
+        order, _ := db.GetOrderByID(orderID)
+        json.NewEncoder(w).Encode(order)
+    }
+  ground_truth:
+    issue: IDOR - missing authorization check
+    line: 3
+    severity: high
+    standard: OWASP A01:2021
+    fix: verify order.UserID == currentUserID
+- id: SEC-004
+  dimension: Security
+  weight: 0.2
+  case_type: false_positive
+  language: go
+  code: |-
+    func getUser(db *sql.DB, userID int) (*User, error) {
+        var user User
+        err := db.QueryRow(
+            "SELECT id, name, email FROM users WHERE id = ?",
+            userID,
+        ).Scan(&user.ID, &user.Name, &user.Email)
+        if err != nil {
+            return nil, err
+        }
+        return &user, nil
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: COR-001
+  dimension: Correctness
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func getLastN(items []string, n int) []string {
+        return items[len(items)-n:]
+    }
+
+    result := getLastN([]string{"a", "b"}, 5)
+  ground_truth:
+    issue: Panic when n > len(items) - missing edge case
+    line: 2
+    severity: high
+    standard: Correctness - edge case handling
+    fix: check if n > len(items) before slice
+- id: COR-002
+  dimension: Correctness
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func getUserEmail(userID int) string {
+        user, _ := db.FindUser(userID)
+        return user.Email
+    }
+  ground_truth:
+    issue: Nil pointer dereference - error ignored
+    line: 2
+    severity: critical
+    standard: Correctness - error handling
+    fix: check err and user != nil before accessing .Email
+- id: COR-003
+  dimension: Correctness
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    var counter int
+
+    func increment() {
+        counter++
+    }
+
+    func main() {
+        for i := 0; i < 1000; i++ {
+            go increment()
+        }
+    }
+  ground_truth:
+    issue: Race condition - concurrent writes to counter
+    line: 4
+    severity: high
+    standard: Correctness - concurrency safety
+    fix: use sync/atomic or sync.Mutex
+- id: COR-004
+  dimension: Correctness
+  weight: 0.2
+  case_type: false_positive
+  language: go
+  code: |-
+    func divide(a, b float64) (float64, error) {
+        if b == 0 {
+            return 0, errors.New("division by zero")
+        }
+        return a / b, nil
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: READ-001
+  dimension: Readability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func processOrder(order Order) error {
+        if order.ID == 0 { return errors.New("invalid id") }
+        if order.UserID == 0 { return errors.New("invalid user") }
+        if len(order.Items) == 0 { return errors.New("no items") }
+        total := 0.0
+        for _, item := range order.Items {
+            total += item.Price * float64(item.Quantity)
+        }
+        if order.Discount > 0 {
+            total = total * (1 - order.Discount)
+        }
+        _, err := db.Exec("INSERT INTO orders ...", order.ID, total)
+        if err != nil { return err }
+        msg := fmt.Sprintf("Your order %d total is %.2f", order.ID, total)
+        smtp.SendMail("...", nil, "no-reply@shop.com", []string{order.Email}, []byte(msg))
+        return nil
+    }
+  ground_truth:
+    issue: God function - SRP violation, does 4 things
+    line: null
+    severity: medium
+    standard: Google Engineering Practices
+    fix: split into validateOrder, calculateTotal, saveOrder, notifyUser
+- id: READ-002
+  dimension: Readability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func calc(x []float64, t int) float64 {
+        r := 0.0
+        for _, v := range x {
+            r += v
+        }
+        if t == 1 {
+            return r / float64(len(x))
+        }
+        return r
+    }
+  ground_truth:
+    issue: Poor naming - x, t, r, v, calc are meaningless
+    line: null
+    severity: medium
+    standard: Google Engineering Practices - meaningful names
+    fix: rename to calculateSum/Average(prices []float64, mode int)
+- id: READ-003
+  dimension: Readability
+  weight: 0.15
+  case_type: false_positive
+  language: go
+  code: |-
+    func calculateDiscount(price float64, membershipTier string) float64 {
+        switch membershipTier {
+        case "gold":
+            return price * 0.20
+        case "silver":
+            return price * 0.10
+        default:
+            return 0
+        }
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: DES-001
+  dimension: Design
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    type OrderService struct{}
+
+    func (s *OrderService) PlaceOrder(order Order) error {
+        db, _ := sql.Open("mysql", "user:pass@/dbname")
+        _, err := db.Exec("INSERT INTO orders ...", order.ID)
+        sg := sendgrid.NewSendClient("SG.api_key")
+        sg.Send(buildEmail(order))
+        return err
+    }
+  ground_truth:
+    issue: Tight coupling to MySQL and SendGrid directly
+    line: null
+    severity: high
+    standard: Google Engineering Practices - dependency injection
+    fix: inject OrderRepository and Notifier interfaces
+- id: DES-002
+  dimension: Design
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    type NumberFactory interface {
+        CreateNumber(val int) Number
+    }
+    type ConcreteNumberFactory struct{}
+    func (f *ConcreteNumberFactory) CreateNumber(val int) Number {
+        return &ConcreteNumber{value: val}
+    }
+    func Add(factory NumberFactory, a, b int) int {
+        numA := factory.CreateNumber(a)
+        numB := factory.CreateNumber(b)
+        return numA.Value() + numB.Value()
+    }
+  ground_truth:
+    issue: Over-engineering - Factory pattern just to add two numbers
+    line: null
+    severity: medium
+    standard: Google Engineering Practices - avoid unnecessary complexity
+    fix: func Add(a, b int) int { return a + b }
+- id: DES-003
+  dimension: Design
+  weight: 0.15
+  case_type: false_positive
+  language: go
+  code: |-
+    type UserRepository interface {
+        FindByID(id int) (*User, error)
+        Save(user *User) error
+    }
+    type UserService struct {
+        repo UserRepository
+    }
+    func NewUserService(repo UserRepository) *UserService {
+        return &UserService{repo: repo}
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: TEST-001
+  dimension: Testability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func GetCurrentUserReport() string {
+        user, _ := db.QueryRow("SELECT * FROM users WHERE id = ?", getCurrentUserID())
+        now := time.Now()
+        return fmt.Sprintf("Report for %s at %s", user.Name, now.Format(time.RFC3339))
+    }
+  ground_truth:
+    issue: Untestable - depends on global db, time.Now, getCurrentUserID
+    line: null
+    severity: high
+    standard: DORA Metrics - testability
+    fix: inject db, clock, userID as parameters
+- id: TEST-002
+  dimension: Testability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func TestDivide(t *testing.T) {
+        result, err := divide(10, 2)
+        if err != nil {
+            t.Fatal(err)
+        }
+        if result != 5 {
+            t.Errorf("expected 5, got %f", result)
+        }
+    }
+  ground_truth:
+    issue: Missing edge case tests - no test for divide by zero
+    line: null
+    severity: medium
+    standard: Google Engineering Practices - test edge cases
+    fix: add TestDivide_ByZero that expects error return
+- id: TEST-003
+  dimension: Testability
+  weight: 0.15
+  case_type: false_positive
+  language: go
+  code: |-
+    func TestGetLastN(t *testing.T) {
+        tests := []struct {
+            items    []string
+            n        int
+            expected []string
+        }{
+            {[]string{"a", "b", "c"}, 2, []string{"b", "c"}},
+            {[]string{"a"}, 1, []string{"a"}},
+            {[]string{"a", "b"}, 5, []string{"a", "b"}},
+            {[]string{}, 1, []string{}},
+        }
+        for _, tt := range tests {
+            result := getLastN(tt.items, tt.n)
+            if !reflect.DeepEqual(result, tt.expected) {
+                t.Errorf("got %v, want %v", result, tt.expected)
+            }
+        }
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: PERF-001
+  dimension: Performance
+  weight: 0.1
+  case_type: true_positive
+  language: go
+  code: |-
+    func getOrdersWithItems(db *sql.DB) ([]Order, error) {
+        orders, _ := db.Query("SELECT * FROM orders")
+        for _, order := range orders {
+            order.Items, _ = db.Query(
+                "SELECT * FROM items WHERE order_id = ?", order.ID,
+            )
+        }
+        return orders, nil
+    }
+  ground_truth:
+    issue: N+1 query - 100 orders = 101 DB queries
+    line: 4
+    severity: high
+    standard: Database best practices - batch loading
+    fix: use JOIN or batch load with WHERE order_id IN (...)
+- id: PERF-002
+  dimension: Performance
+  weight: 0.1
+  case_type: true_positive
+  language: go
+  code: |-
+    func findDuplicates(items []string) []string {
+        var duplicates []string
+        for i := 0; i < len(items); i++ {
+            for j := i + 1; j < len(items); j++ {
+                if items[i] == items[j] {
+                    duplicates = append(duplicates, items[i])
+                }
+            }
+        }
+        return duplicates
+    }
+  ground_truth:
+    issue: O(n²) nested loop
+    line: null
+    severity: medium
+    standard: Algorithm complexity
+    fix: use map[string]int for O(n) solution
+- id: PERF-003
+  dimension: Performance
+  weight: 0.1
+  case_type: false_positive
+  language: go
+  code: |-
+    func findDuplicates(items []string) []string {
+        seen := make(map[string]bool)
+        var duplicates []string
+        for _, item := range items {
+            if seen[item] {
+                duplicates = append(duplicates, item)
+            }
+            seen[item] = true
+        }
+        return duplicates
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: IDIO-001
+  dimension: Idiomatic
+  weight: 0.05
+  case_type: true_positive
+  language: go
+  code: |-
+    func readFile(path string) string {
+        content, err := os.ReadFile(path)
+        if err != nil {
+            panic(err)
+        }
+        return string(content)
+    }
+  ground_truth:
+    issue: Using panic for recoverable error
+    line: null
+    severity: low
+    standard: Effective Go - error handling
+    fix: return string(content), nil and return empty string, err
+- id: IDIO-002
+  dimension: Idiomatic
+  weight: 0.05
+  case_type: true_positive
+  language: go
+  code: |-
+    type userManager struct{}
+
+    func (um *userManager) GetUserId(user User) int {
+        return user.Id
+    }
+
+    func (um *userManager) getUserURL(user User) string {
+        return user.Url
+    }
+  ground_truth:
+    issue: Acronym casing not following Go convention - Id should be ID, Url should be URL
+    line: null
+    severity: low
+    standard: Effective Go - initialisms
+    fix: rename Id->ID, Url->URL everywhere
+- id: IDIO-003
+  dimension: Idiomatic
+  weight: 0.05
+  case_type: false_positive
+  language: go
+  code: |-
+    type UserService struct {
+        repo UserRepository
+    }
+
+    func (s *UserService) FindByID(id int) (*User, error) {
+        if id <= 0 {
+            return nil, fmt.Errorf("invalid user id: %d", id)
+        }
+        return s.repo.FindByID(id)
+    }
+  ground_truth:
+    issue: null
+    line: null
+    severity: null
+    standard: null
+    fix: null
+- id: SEC-005
+  dimension: Security
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func generateToken() string {
+        b := make([]byte, 16)
+        for i := range b {
+            b[i] = byte(rand.Intn(256))
+        }
+        return hex.EncodeToString(b)
+    }
+  ground_truth:
+    issue: Insecure random - math/rand is not cryptographically secure for tokens
+    line: 3
+    severity: critical
+    standard: OWASP A02:2021
+    fix: use crypto/rand.Read instead of math/rand
+- id: SEC-006
+  dimension: Security
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func renderProfile(w http.ResponseWriter, username string) {
+        fmt.Fprintf(w, "<h1>Hello, %s</h1>", username)
+    }
+  ground_truth:
+    issue: XSS via unescaped user input in HTML output
+    line: 2
+    severity: high
+    standard: OWASP A03:2021
+    fix: use html.EscapeString(username) or html/template
+- id: COR-005
+  dimension: Correctness
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func sumAll(nums []int) int {
+        total := 0
+        for _, n := range nums {
+            total += n
+        }
+        return total
+    }
+
+    result := sumAll(nil)
+  ground_truth:
+    issue: No nil/empty guard — caller can pass nil slice silently, return 0 masks bug
+    line: 1
+    severity: medium
+    standard: Correctness - edge case handling
+    fix: document nil behavior or add explicit empty check
+- id: COR-006
+  dimension: Correctness
+  weight: 0.2
+  case_type: true_positive
+  language: go
+  code: |-
+    func closeAll(conns []*sql.DB) {
+        for _, db := range conns {
+            db.Close()
+        }
+    }
+  ground_truth:
+    issue: Errors from Close() silently discarded - connection leaks go undetected
+    line: 3
+    severity: high
+    standard: Correctness - error handling
+    fix: collect and return close errors
+- id: READ-004
+  dimension: Readability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func applyDiscount(price float64) float64 {
+        if price > 1000 {
+            return price * 0.85
+        }
+        return price * 0.95
+    }
+  ground_truth:
+    issue: Magic numbers 0.85, 0.95, 1000 — intent unclear without named constants
+    line: null
+    severity: medium
+    standard: Google Engineering Practices
+    fix: extract const PremiumDiscount, StandardDiscount, PremiumThreshold
+- id: READ-005
+  dimension: Readability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func handle(r *Request) error {
+        if r != nil {
+            if r.User != nil {
+                if r.User.Active {
+                    if r.Payload != nil {
+                        return process(r.Payload)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+  ground_truth:
+    issue: Deep nesting 4 levels — hard to follow control flow
+    line: null
+    severity: medium
+    standard: Google Engineering Practices
+    fix: use early returns to flatten nesting
+- id: DES-004
+  dimension: Design
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    var db *sql.DB
+
+    func init() {
+        var err error
+        db, err = sql.Open("postgres", os.Getenv("DATABASE_URL"))
+        if err != nil {
+            log.Fatal(err)
+        }
+    }
+  ground_truth:
+    issue: Global mutable state via package-level db — untestable and hidden coupling
+    line: null
+    severity: high
+    standard: Google Engineering Practices - dependency injection
+    fix: pass *sql.DB as constructor argument
+- id: DES-005
+  dimension: Design
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    type UserService interface {
+        Create(u User) error
+        Update(u User) error
+        Delete(id int) error
+        FindByID(id int) (*User, error)
+        FindByEmail(email string) (*User, error)
+        List() ([]User, error)
+        Deactivate(id int) error
+        ResetPassword(id int, pw string) error
+    }
+  ground_truth:
+    issue: Fat interface - 8 methods forces implementors to stub all, violates ISP
+    line: null
+    severity: medium
+    standard: Google Engineering Practices - interface segregation
+    fix: 'split into smaller focused interfaces: UserReader, UserWriter'
+- id: TEST-004
+  dimension: Testability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func loadConfig() Config {
+        f, _ := os.Open("/etc/app/config.json")
+        defer f.Close()
+        var cfg Config
+        json.NewDecoder(f).Decode(&cfg)
+        return cfg
+    }
+  ground_truth:
+    issue: Hard-coded file path makes function untestable without filesystem setup
+    line: null
+    severity: high
+    standard: DORA Metrics - testability
+    fix: accept io.Reader parameter instead of opening file internally
+- id: TEST-005
+  dimension: Testability
+  weight: 0.15
+  case_type: true_positive
+  language: go
+  code: |-
+    func TestProcessOrder(t *testing.T) {
+        order := Order{ID: 1, Items: []Item{{Price: 10.0, Quantity: 2}}}
+        err := ProcessOrder(order)
+        if err != nil {
+            t.Fatal(err)
+        }
+    }
+  ground_truth:
+    issue: Test only covers happy path - no test for empty items, zero price, or invalid ID
+    line: null
+    severity: medium
+    standard: Google Engineering Practices - test edge cases
+    fix: add table-driven subtests for empty items, zero price, invalid ID
+- id: PERF-004
+  dimension: Performance
+  weight: 0.1
+  case_type: true_positive
+  language: go
+  code: |-
+    func buildQuery(filters []string) string {
+        query := "SELECT * FROM users WHERE "
+        for _, f := range filters {
+            query += f + " AND "
+        }
+        return query
+    }
+  ground_truth:
+    issue: String concatenation in loop - O(n²) allocations, use strings.Builder
+    line: 3
+    severity: high
+    standard: Algorithm complexity
+    fix: use strings.Builder or strings.Join
+- id: PERF-005
+  dimension: Performance
+  weight: 0.1
+  case_type: true_positive
+  language: go
+  code: |-
+    func countWords(words []string) map[string]int {
+        counts := map[string]int{}
+        for _, w := range words {
+            counts[w] = counts[w] + 1
+        }
+        return counts
+    }
+
+    func topWord(words []string) string {
+        counts := countWords(words)
+        best := ""
+        for _, w := range words {
+            if counts[w] > counts[best] {
+                best = w
+            }
+        }
+        return best
+    }
+  ground_truth:
+    issue: countWords called once but topWord re-iterates words doing redundant map lookups
+    line: null
+    severity: medium
+    standard: Algorithm complexity
+    fix: track max during single pass in countWords
+- id: IDIO-004
+  dimension: Idiomatic
+  weight: 0.05
+  case_type: true_positive
+  language: go
+  code: |-
+    func NewUser(name string) *User {
+        u := new(User)
+        u.Name = name
+        u.Active = true
+        return u
+    }
+  ground_truth:
+    issue: new(User) then field assignment is non-idiomatic - use struct literal
+    line: 2
+    severity: low
+    standard: Effective Go - composite literals
+    fix: 'return &User{Name: name, Active: true}'
+- id: IDIO-005
+  dimension: Idiomatic
+  weight: 0.05
+  case_type: true_positive
+  language: go
+  code: |-
+    func divide(a, b float64) (result float64, err error) {
+        if b == 0 {
+            err = errors.New("division by zero")
+            return
+        }
+        result = a / b
+        return
+    }
+  ground_truth:
+    issue: Naked returns with named results reduce readability in non-trivial functions
+    line: null
+    severity: low
+    standard: Effective Go - named return values
+    fix: 'use explicit return values: return a/b, nil'

@@ -1,47 +1,60 @@
 # ============================================================
-# AI Code Reviewer — Eval Script (OpenRouter + SQLite)
+# AI Code Reviewer — Eval (consolidated)
 # ============================================================
-# Setup:
-#   1. Copy .env and fill in API keys
-#   2. .venv\Scripts\activate
-#   3. python eval.py
+# Loads test cases from evals/test_cases.yaml (data),
+# runs model + LLM-as-judge, aggregates metrics, saves CSVs.
+#
+# Replaces previous eval.py + single_eval.py + setup_db.py + schema.sql + data.db.
+#
+# CLI:
+#   python -m evals.eval                       # full run
+#   python -m evals.eval --single SEC-001      # one case, prints parsed JSON only
+#   python -m evals.eval --dimension Security  # filter to one dimension
+#   python -m evals.eval --list                # list cases, no API calls
 # ============================================================
 
+from __future__ import annotations
+
+import argparse
 import json
 import os
-import sqlite3
 import statistics
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import yaml
 from dotenv import load_dotenv
 from openai import OpenAI
 from tabulate import tabulate
 from tqdm import tqdm
 
-import skills
+# ── Path setup ───────────────────────────────────────────────
+# evals/ sits beside skills.py at repo root. Make root importable.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Force UTF-8 on Windows so tabulate's box-drawing chars don't crash cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+import skills  # noqa: E402
 
 load_dotenv()
 
 # ── Config ───────────────────────────────────────────────────
 
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-OPENAI_API_KEY     = os.environ["OPENAI_API_KEY"]
-
-DB_PATH      = Path(__file__).parent / "data.db"
-RESULTS_DIR  = Path(__file__).parent / "results"
+TEST_CASES_PATH = Path(__file__).parent / "test_cases.yaml"
+RESULTS_DIR     = ROOT / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
-
-client = OpenAI(
-    api_key=OPENAI_API_KEY,
-)
-
-judge_client = OpenAI(
-    api_key=OPENAI_API_KEY,
-)
 
 MODELS = [
     "gpt-5.4-mini",
@@ -50,9 +63,15 @@ MODELS = [
 TEMPERATURE         = 0
 RUNS_PER_CASE       = 5
 DELAY_BETWEEN_CALLS = 3
+MAX_TOOL_ITERATIONS = 4
+JUDGE_MODEL         = "o3-mini"
 
 
-# ── Load Test Cases from SQLite ──────────────────────────────
+def _build_client() -> OpenAI:
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+
+# ── Test case loader ─────────────────────────────────────────
 
 @dataclass
 class TestCase:
@@ -65,46 +84,40 @@ class TestCase:
     ground_truth: dict
 
 
-def load_test_cases(dimension: Optional[str] = None) -> list[TestCase]:
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    cur = con.cursor()
+def load_test_cases(
+    *,
+    single_id: Optional[str] = None,
+    dimension: Optional[str] = None,
+) -> list[TestCase]:
+    raw = yaml.safe_load(TEST_CASES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError(f"{TEST_CASES_PATH} must be a YAML list at top level")
 
-    if dimension:
-        cur.execute("SELECT * FROM test_cases WHERE dimension = ? ORDER BY id", (dimension,))
-    else:
-        cur.execute("SELECT * FROM test_cases ORDER BY id")
-
-    rows = cur.fetchall()
-    con.close()
-
-    if not rows:
-        raise ValueError("No rows in test_cases — run setup_db.py first")
-
-    test_cases = []
-    for row in rows:
-        ground_truth = {
-            "issue":    row["gt_issue"],
-            "line":     row["gt_line"],
-            "severity": row["gt_severity"],
-            "standard": row["gt_standard"],
-            "fix":      row["gt_fix"],
-        }
-        test_cases.append(TestCase(
+    cases = [
+        TestCase(
             id=row["id"],
             dimension=row["dimension"],
             weight=float(row["weight"]),
             case_type=row["case_type"],
             language=row["language"],
             code=row["code"],
-            ground_truth=ground_truth,
-        ))
+            ground_truth=row["ground_truth"],
+        )
+        for row in raw
+    ]
 
-    print(f"Loaded {len(test_cases)} test cases from {DB_PATH.name}")
-    return test_cases
+    if single_id:
+        cases = [c for c in cases if c.id == single_id]
+        if not cases:
+            raise SystemExit(f"No case with id={single_id!r}")
+    if dimension:
+        cases = [c for c in cases if c.dimension.lower() == dimension.lower()]
+        if not cases:
+            raise SystemExit(f"No cases for dimension={dimension!r}")
+    return cases
 
 
-# ── Prompt Builder ───────────────────────────────────────────
+# ── Prompts ──────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a senior software engineer performing a code review.
 Analyze the given code and identify issues across these dimensions:
@@ -200,6 +213,33 @@ Focus on dimension: {tc.dimension}
 Identify any issues or confirm the code is clean."""
 
 
+JUDGE_PROMPT = """You are evaluating an AI code reviewer's response quality.
+
+Test case ground truth:
+{ground_truth}
+
+AI reviewer's response:
+{response}
+
+Score the response on these criteria (1-5 each):
+1. Accuracy: Did it correctly identify (or correctly pass) the issue?
+2. Explanation quality: Does it explain WHY (not just what)?
+3. Fix quality: Is the suggested fix concrete and correct?
+4. Severity accuracy: Is the severity rating appropriate?
+5. Junior-friendliness: Can a junior dev understand and act on this?
+
+Respond ONLY with JSON:
+{{
+  "accuracy": <1-5>,
+  "explanation_quality": <1-5>,
+  "fix_quality": <1-5>,
+  "severity_accuracy": <1-5>,
+  "junior_friendliness": <1-5>,
+  "overall": <1-5>,
+  "notes": "<brief comment>"
+}}"""
+
+
 # ── Runner ───────────────────────────────────────────────────
 
 @dataclass
@@ -217,10 +257,7 @@ class EvalResult:
     parse_error: bool = False
 
 
-MAX_TOOL_ITERATIONS = 4
-
-
-def call_model(model: str, tc: TestCase, max_retries: int = 3) -> tuple[str, float]:
+def call_model(client: OpenAI, model: str, tc: TestCase, max_retries: int = 3) -> tuple[str, float]:
     base_messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",   "content": build_user_prompt(tc)},
@@ -275,7 +312,7 @@ def call_model(model: str, tc: TestCase, max_retries: int = 3) -> tuple[str, flo
                         "content":      result,
                     })
 
-            # tool budget exhausted — force a final answer with no tools
+            # tool budget exhausted — force a final answer
             response = client.chat.completions.create(
                 model=model,
                 temperature=TEMPERATURE,
@@ -307,7 +344,7 @@ def call_model(model: str, tc: TestCase, max_retries: int = 3) -> tuple[str, flo
 
 def parse_response(raw: str) -> tuple[Optional[dict], bool]:
     try:
-        clean = raw.strip()
+        clean = (raw or "").strip()
         if "<think>" in clean:
             clean = clean.split("</think>")[-1].strip()
         if clean.startswith("```"):
@@ -319,16 +356,21 @@ def parse_response(raw: str) -> tuple[Optional[dict], bool]:
         return None, True
 
 
-def run_eval(models: list[str], test_suite: list[TestCase]) -> list[EvalResult]:
-    results = []
-    total = len(models) * len(test_suite) * RUNS_PER_CASE
+def run_eval(
+    client: OpenAI,
+    models: list[str],
+    test_suite: list[TestCase],
+    runs_per_case: int = RUNS_PER_CASE,
+) -> list[EvalResult]:
+    results: list[EvalResult] = []
+    total = len(models) * len(test_suite) * runs_per_case
     pbar = tqdm(total=total, desc="Evaluating")
 
     for model in models:
         for tc in test_suite:
-            for run in range(RUNS_PER_CASE):
+            for run in range(runs_per_case):
                 try:
-                    raw, latency = call_model(model, tc)
+                    raw, latency = call_model(client, model, tc)
                     parsed, parse_error = parse_response(raw)
                     has_issue = parsed.get("has_issue", False) if parsed else False
                     severity = parsed.get("severity") if parsed else None
@@ -469,36 +511,7 @@ def compute_overall(metrics_df: pd.DataFrame) -> pd.DataFrame:
 
 # ── LLM-as-Judge ─────────────────────────────────────────────
 
-JUDGE_MODEL = "o3-mini"
-
-JUDGE_PROMPT = """You are evaluating an AI code reviewer's response quality.
-
-Test case ground truth:
-{ground_truth}
-
-AI reviewer's response:
-{response}
-
-Score the response on these criteria (1-5 each):
-1. Accuracy: Did it correctly identify (or correctly pass) the issue?
-2. Explanation quality: Does it explain WHY (not just what)?
-3. Fix quality: Is the suggested fix concrete and correct?
-4. Severity accuracy: Is the severity rating appropriate?
-5. Junior-friendliness: Can a junior dev understand and act on this?
-
-Respond ONLY with JSON:
-{{
-  "accuracy": <1-5>,
-  "explanation_quality": <1-5>,
-  "fix_quality": <1-5>,
-  "severity_accuracy": <1-5>,
-  "junior_friendliness": <1-5>,
-  "overall": <1-5>,
-  "notes": "<brief comment>"
-}}"""
-
-
-def judge_sample(tc: TestCase, result: EvalResult) -> Optional[dict]:
+def judge_sample(judge_client: OpenAI, tc: TestCase, result: EvalResult) -> Optional[dict]:
     if not result.raw_response or result.parse_error:
         return None
     prompt = JUDGE_PROMPT.format(
@@ -519,14 +532,19 @@ def judge_sample(tc: TestCase, result: EvalResult) -> Optional[dict]:
         return None
 
 
-def run_judge(results: list[EvalResult], test_suite: list[TestCase], sample_rate: float = 0.25) -> pd.DataFrame:
+def run_judge(
+    judge_client: OpenAI,
+    results: list[EvalResult],
+    test_suite: list[TestCase],
+    sample_rate: float = 0.25,
+) -> pd.DataFrame:
     import random
     sampled = random.sample(results, k=max(1, int(len(results) * sample_rate)))
     rows = []
     print(f"Running LLM-as-judge on {len(sampled)} samples...")
     for r in tqdm(sampled):
         tc = next(t for t in test_suite if t.id == r.test_id)
-        scores = judge_sample(tc, r)
+        scores = judge_sample(judge_client, tc, r)
         if scores:
             rows.append({
                 "Model": r.model.split("/")[-1],
@@ -539,9 +557,9 @@ def run_judge(results: list[EvalResult], test_suite: list[TestCase], sample_rate
     return pd.DataFrame(rows)
 
 
-# ── Print Results ────────────────────────────────────────────
+# ── Output ───────────────────────────────────────────────────
 
-def print_results(metrics_df: pd.DataFrame, overall_df: pd.DataFrame):
+def print_results(metrics_df: pd.DataFrame, overall_df: pd.DataFrame) -> None:
     print("\n" + "="*70)
     print("OVERALL RANKING (Weighted F1)")
     print("="*70)
@@ -560,37 +578,12 @@ def print_results(metrics_df: pd.DataFrame, overall_df: pd.DataFrame):
             print(tabulate(dim_df, headers="keys", tablefmt="simple", showindex=False))
 
 
-# ── Main ─────────────────────────────────────────────────────
-
-def main():
-    test_suite = load_test_cases()
-
-    skills.init()
-    catalog = skills.list_skills()
-    print(f"Loaded {len(catalog)} skill pack(s): {[s['name'] for s in catalog]}")
-
-    print(f"\nStarting eval: {len(MODELS)} models x {len(test_suite)} cases x {RUNS_PER_CASE} runs")
-    print(f"Total API calls: {len(MODELS) * len(test_suite) * RUNS_PER_CASE}")
-    print(f"Est. time: ~{len(MODELS) * len(test_suite) * RUNS_PER_CASE * DELAY_BETWEEN_CALLS / 60:.0f} min\n")
-
-    results   = run_eval(MODELS, test_suite)
-    aggregated = aggregate_runs(results, test_suite)
-    metrics_df = compute_metrics(aggregated)
-    overall_df = compute_overall(metrics_df)
-
-    print_results(metrics_df, overall_df)
-
-    judge_df = run_judge(results, test_suite, sample_rate=0.25)
-    if not judge_df.empty:
-        print("\n" + "="*70)
-        print("LLM-AS-JUDGE SCORES (avg per model)")
-        print("="*70)
-        judge_summary = judge_df.groupby("Model")[
-            ["accuracy", "explanation_quality", "fix_quality",
-             "severity_accuracy", "junior_friendliness", "overall"]
-        ].mean().round(2)
-        print(tabulate(judge_summary, headers="keys", tablefmt="rounded_outline"))
-
+def save_csvs(
+    results: list[EvalResult],
+    metrics_df: pd.DataFrame,
+    overall_df: pd.DataFrame,
+    judge_df: pd.DataFrame,
+) -> None:
     responses_df = pd.DataFrame([{
         "test_id":             r.test_id,
         "model":               r.model,
@@ -604,14 +597,94 @@ def main():
         "raw_response":        r.raw_response,
     } for r in results])
     responses_df.to_csv(RESULTS_DIR / "responses.csv", index=False)
-
     metrics_df.to_csv(RESULTS_DIR / "eval_metrics.csv", index=False)
     overall_df.to_csv(RESULTS_DIR / "eval_overall.csv", index=False)
     if not judge_df.empty:
         judge_df.to_csv(RESULTS_DIR / "eval_judge.csv", index=False)
-
     print(f"\nSaved CSVs to {RESULTS_DIR}")
-    return results, aggregated, metrics_df, overall_df
+
+
+# ── CLI ──────────────────────────────────────────────────────
+
+def cmd_list(args: argparse.Namespace) -> None:
+    cases = load_test_cases(dimension=args.dimension)
+    rows = [
+        {"ID": c.id, "Dimension": c.dimension, "Type": c.case_type,
+         "Lang": c.language, "Weight": c.weight}
+        for c in cases
+    ]
+    print(tabulate(rows, headers="keys", tablefmt="rounded_outline"))
+    print(f"\nTotal: {len(cases)}")
+
+
+def cmd_single(args: argparse.Namespace) -> None:
+    cases = load_test_cases(single_id=args.single)
+    tc = cases[0]
+    client = _build_client()
+    skills.init()
+
+    print(f"Running {tc.id} ({tc.dimension}, {tc.case_type})...\n")
+    raw, latency = call_model(client, MODELS[0], tc)
+    parsed, parse_error = parse_response(raw)
+
+    print("── Raw ─────────────────────────────────")
+    print(raw)
+    if parsed:
+        print("\n── Parsed ──────────────────────────────")
+        print(json.dumps(parsed, indent=2))
+    print(f"\nLatency: {latency:.0f} ms  parse_error={parse_error}")
+
+
+def cmd_full(args: argparse.Namespace) -> None:
+    test_suite = load_test_cases(dimension=args.dimension)
+    client = _build_client()
+    judge_client = _build_client()
+    skills.init()
+    catalog = skills.list_skills()
+    print(f"Loaded {len(catalog)} skill pack(s): {[s['name'] for s in catalog]}")
+
+    n_calls = len(MODELS) * len(test_suite) * RUNS_PER_CASE
+    print(f"\nStarting eval: {len(MODELS)} models x {len(test_suite)} cases x {RUNS_PER_CASE} runs")
+    print(f"Total API calls: {n_calls}")
+    print(f"Est. time: ~{n_calls * DELAY_BETWEEN_CALLS / 60:.0f} min\n")
+
+    results    = run_eval(client, MODELS, test_suite)
+    aggregated = aggregate_runs(results, test_suite)
+    metrics_df = compute_metrics(aggregated)
+    overall_df = compute_overall(metrics_df)
+    print_results(metrics_df, overall_df)
+
+    judge_df = run_judge(judge_client, results, test_suite, sample_rate=0.25)
+    if not judge_df.empty:
+        print("\n" + "="*70)
+        print("LLM-AS-JUDGE SCORES (avg per model)")
+        print("="*70)
+        judge_summary = judge_df.groupby("Model")[
+            ["accuracy", "explanation_quality", "fix_quality",
+             "severity_accuracy", "junior_friendliness", "overall"]
+        ].mean().round(2)
+        print(tabulate(judge_summary, headers="keys", tablefmt="rounded_outline"))
+
+    save_csvs(results, metrics_df, overall_df, judge_df)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="ReviewMe eval framework")
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument("--list", action="store_true",
+                   help="List test cases without running")
+    g.add_argument("--single", metavar="ID",
+                   help="Run a single test case by id, print parsed JSON")
+    parser.add_argument("--dimension", metavar="NAME",
+                        help="Filter to one dimension (Security, Correctness, ...)")
+    args = parser.parse_args()
+
+    if args.list:
+        cmd_list(args)
+    elif args.single:
+        cmd_single(args)
+    else:
+        cmd_full(args)
 
 
 if __name__ == "__main__":
