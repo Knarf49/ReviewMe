@@ -98,3 +98,13 @@ def test_delete_thread_cascades_messages(db):
     db.delete(t)
     db.flush()
     assert db.get(Message, mid) is None
+
+
+def test_get_db_round_trip():
+    """Smoke test: get_db opens a session, commits, closes."""
+    from sqlalchemy import text
+
+    from app.core.db import get_db
+
+    with get_db() as session:
+        session.execute(text("SELECT 1"))
