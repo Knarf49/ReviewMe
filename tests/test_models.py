@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.core.models import User
+from app.core.models import Thread, User
 
 
 def test_create_user_has_defaults(db):
@@ -31,3 +31,27 @@ def test_user_unique_email(db):
     db.add(User(username="c2", email="dup@x.com", password_hash="h"))
     with pytest.raises(IntegrityError):
         db.flush()
+
+
+def test_thread_belongs_to_user(db):
+    u = User(username="dave", email="d@x.com", password_hash="h")
+    db.add(u)
+    db.flush()
+    t = Thread(user_id=u.id)
+    db.add(t)
+    db.flush()
+    assert t.id is not None
+    assert t.user_id == u.id
+
+
+def test_delete_user_cascades_threads(db):
+    u = User(username="ed", email="e@x.com", password_hash="h")
+    db.add(u)
+    db.flush()
+    t = Thread(user_id=u.id)
+    db.add(t)
+    db.flush()
+    tid = t.id
+    db.delete(u)
+    db.flush()
+    assert db.get(Thread, tid) is None

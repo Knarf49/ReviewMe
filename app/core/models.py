@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Integer, String, TIMESTAMP
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import ForeignKey, Index, Integer, String, TIMESTAMP
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 
@@ -23,4 +23,30 @@ class User(Base):
         TIMESTAMP(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+    threads: Mapped[list["Thread"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan",
+    )
+
+
+class Thread(Base):
+    __tablename__ = "threads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    user: Mapped["User"] = relationship(back_populates="threads")
+
+    __table_args__ = (
+        Index("idx_threads_user_id", "user_id"),
     )
