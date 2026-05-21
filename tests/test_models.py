@@ -1,7 +1,8 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.models import Thread, User
+from app.core.models import Message, Thread, User
 
 
 def test_create_user_has_defaults(db):
@@ -55,3 +56,45 @@ def test_delete_user_cascades_threads(db):
     db.delete(u)
     db.flush()
     assert db.get(Thread, tid) is None
+
+
+def test_message_role_check_rejects_invalid(db):
+    u = User(username="fr", email="fr@x.com", password_hash="h")
+    db.add(u)
+    db.flush()
+    t = Thread(user_id=u.id)
+    db.add(t)
+    db.flush()
+    db.add(Message(thread_id=t.id, role="invalid", content="x"))
+    with pytest.raises(IntegrityError):
+        db.flush()
+
+
+def test_message_valid_roles_accepted(db):
+    u = User(username="gw", email="gw@x.com", password_hash="h")
+    db.add(u)
+    db.flush()
+    t = Thread(user_id=u.id)
+    db.add(t)
+    db.flush()
+    for role in ("user", "assistant", "system"):
+        db.add(Message(thread_id=t.id, role=role, content=f"hi {role}"))
+    db.flush()
+    msgs = db.scalars(select(Message).where(Message.thread_id == t.id)).all()
+    assert len(msgs) == 3
+
+
+def test_delete_thread_cascades_messages(db):
+    u = User(username="hk", email="h@x.com", password_hash="h")
+    db.add(u)
+    db.flush()
+    t = Thread(user_id=u.id)
+    db.add(t)
+    db.flush()
+    m = Message(thread_id=t.id, role="user", content="hello")
+    db.add(m)
+    db.flush()
+    mid = m.id
+    db.delete(t)
+    db.flush()
+    assert db.get(Message, mid) is None
