@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "reviewme-local",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "reviewme",
+      "Username": "reviewme",
+      "SSLMode": "prefer"
+    }
+  }
+}
