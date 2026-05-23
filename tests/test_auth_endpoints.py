@@ -98,6 +98,58 @@ def test_logout_with_no_refresh_cookie_returns_204_anyway(client):
     assert r.status_code == 204
 
 
+def test_refresh_happy_rotates_and_returns_new_csrf(client, db, redis_client):
+    _signup(client)
+    csrf_tok = _login(client)
+    r = client.post("/refresh", headers={"X-CSRF-Token": csrf_tok})
+    assert r.status_code == 200
+    body = r.json()
+    assert "csrf_token" in body
+    assert body["csrf_token"] != csrf_tok
+    db.expire_all()
+    from app.core.models import RefreshSession, User
+    user = db.query(User).filter_by(username="alice").one()
+    rows = db.query(RefreshSession).filter_by(user_id=user.id).all()
+    used = [r for r in rows if r.used_at is not None]
+    active = [r for r in rows if r.used_at is None]
+    assert len(used) == 1
+    assert len(active) == 1
+    assert active[0].parent_id == used[0].id
+
+
+def test_refresh_with_reused_token_kills_family(client, db, redis_client):
+    _signup(client)
+    csrf_tok = _login(client)
+    old_refresh = client.cookies.get("refresh_token")
+    r1 = client.post("/refresh", headers={"X-CSRF-Token": csrf_tok})
+    assert r1.status_code == 200
+    new_csrf = r1.json()["csrf_token"]
+    client.cookies.set("refresh_token", old_refresh)
+    r2 = client.post("/refresh", headers={"X-CSRF-Token": new_csrf})
+    assert r2.status_code == 401
+    db.expire_all()
+    from app.core.models import RefreshSession, User
+    user = db.query(User).filter_by(username="alice").one()
+    assert db.query(RefreshSession).filter_by(user_id=user.id).count() == 0
+    from app.web.services.auth import denylist
+    assert denylist.get_user_epoch(redis_client, user.id) is not None
+
+
+def test_refresh_without_cookie_401(client):
+    _signup(client)
+    csrf_tok = _login(client)
+    client.cookies.delete("refresh_token")
+    r = client.post("/refresh", headers={"X-CSRF-Token": csrf_tok})
+    assert r.status_code == 401
+
+
+def test_refresh_csrf_mismatch_403(client):
+    _signup(client)
+    _login(client)
+    r = client.post("/refresh", headers={"X-CSRF-Token": "wrong"})
+    assert r.status_code == 403
+
+
 def test_login_session_limit_evicts_oldest(client, db, monkeypatch):
     monkeypatch.setenv("SESSION_LIMIT_PER_USER", "2")
     from app.web.services.auth import config

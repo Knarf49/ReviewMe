@@ -146,3 +146,45 @@ def logout_all(
     cookies.clear_auth_cookies(response)
     response.status_code = status.HTTP_204_NO_CONTENT
     return None
+
+
+class RefreshResponse(BaseModel):
+    csrf_token: str
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+def refresh(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    rc: redis_lib.Redis = Depends(get_redis),
+    _csrf: None = Depends(csrf.require_csrf),
+):
+    from app.core.models import RefreshSession
+    from app.web.services.auth.exceptions import InvalidToken
+
+    plain = request.cookies.get(cookies.REFRESH_COOKIE)
+    if not plain:
+        cookies.clear_auth_cookies(response)
+        raise InvalidToken()
+
+    new_plain, family_id, sid = sessions.rotate(
+        db,
+        rc,
+        plain,
+        user_agent=request.headers.get("user-agent"),
+        ip=_client_ip(request),
+    )
+    db.commit()
+
+    new_row = db.query(RefreshSession).filter_by(
+        token_hash=tokens.hash_refresh(new_plain),
+    ).one()
+    user = db.get(User, new_row.user_id)
+
+    access = tokens.encode_access(uid=user.id, sid=str(sid), role=user.role)
+    csrf_token = csrf.gen_csrf()
+    cookies.set_auth_cookies(
+        response, access=access, refresh=new_plain, csrf=csrf_token,
+    )
+    return {"csrf_token": csrf_token}
