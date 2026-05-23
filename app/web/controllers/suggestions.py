@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from enum import Enum
 
 import redis as redis_lib
@@ -78,3 +79,44 @@ def post_suggestions(
             detail="enqueue failed",
         )
     return EnqueueResponse(job_id=job_id)
+
+
+class JobStatusResponse(BaseModel):
+    job_id: uuid.UUID
+    status: str
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    model: str | None = None
+    elapsed_ms: int | None = None
+    result: dict | None = None
+    error: str | None = None
+
+
+@router.get("/suggestions/{job_id}", response_model=JobStatusResponse)
+def get_suggestion(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = db.get(SuggestionJob, job_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    elapsed_ms = None
+    model_field = None
+    if row.status == "done" and isinstance(row.result, dict):
+        elapsed_ms = row.result.get("elapsed_ms")
+        model_field = row.result.get("model") or row.model
+
+    return JobStatusResponse(
+        job_id=row.id,
+        status=row.status,
+        created_at=row.created_at,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        model=model_field,
+        elapsed_ms=elapsed_ms,
+        result=row.result,
+        error=row.error,
+    )
