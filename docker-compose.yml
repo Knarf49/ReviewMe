@@ -75,6 +75,25 @@ services:
       - ./alembic.ini:/code/alembic.ini:ro
       - ./run.py:/code/run.py:ro
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reviewme-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker.main"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/code/app
+
 volumes:
   pgdata:
   pgadmin_data:
