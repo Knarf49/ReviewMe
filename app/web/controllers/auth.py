@@ -12,6 +12,7 @@ from app.core.db import db_dep as get_db
 from app.core.models import User
 from app.core.redis_client import get_redis
 from app.web.services.auth import cookies, csrf, sessions, tokens
+from app.web.services.auth.dependencies import get_current_user
 from app.web.services.auth.exceptions import InvalidCredentials
 
 router = APIRouter(tags=["auth"])
@@ -127,6 +128,21 @@ def logout(
         if row is not None:
             sessions.revoke_family(db, rc, family_id=row.family_id)
             db.commit()
+    cookies.clear_auth_cookies(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return None
+
+
+@router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
+def logout_all(
+    response: Response,
+    db: Session = Depends(get_db),
+    rc: redis_lib.Redis = Depends(get_redis),
+    user: User = Depends(get_current_user),
+    _csrf: None = Depends(csrf.require_csrf),
+):
+    sessions.revoke_all_for_user(db, rc, user_id=user.id)
+    db.commit()
     cookies.clear_auth_cookies(response)
     response.status_code = status.HTTP_204_NO_CONTENT
     return None

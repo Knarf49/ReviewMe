@@ -71,6 +71,25 @@ def test_logout_without_csrf_403(client):
     assert r.status_code == 403
 
 
+def test_logout_all_deletes_all_sessions_and_bumps_epoch(client, db, redis_client):
+    _signup(client)
+    csrf_tok = _login(client)
+    csrf_tok2 = _login(client)
+    r = client.post("/logout-all", headers={"X-CSRF-Token": csrf_tok2})
+    assert r.status_code == 204
+    db.expire_all()
+    from app.core.models import RefreshSession, User
+    user = db.query(User).filter_by(username="alice").one()
+    assert db.query(RefreshSession).filter_by(user_id=user.id).count() == 0
+    from app.web.services.auth import denylist
+    assert denylist.get_user_epoch(redis_client, user.id) is not None
+
+
+def test_logout_all_requires_auth(client):
+    r = client.post("/logout-all", headers={"X-CSRF-Token": "x"})
+    assert r.status_code == 401
+
+
 def test_logout_with_no_refresh_cookie_returns_204_anyway(client):
     _signup(client)
     csrf_tok = _login(client)
