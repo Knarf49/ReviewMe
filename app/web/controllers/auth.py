@@ -1,15 +1,20 @@
-from fastapi import APIRouter, HTTPException, status, Depends
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from passlib.context import CryptContext
+import ipaddress
 from datetime import datetime
 
-from core.db import db_dep as get_db
-from core.models import User
+import redis as redis_lib
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.db import db_dep as get_db
+from app.core.models import User
+from app.core.redis_client import get_redis
+from app.web.services.auth import cookies, csrf, sessions, tokens
+from app.web.services.auth.exceptions import InvalidCredentials
 
 router = APIRouter(tags=["auth"])
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -32,16 +37,28 @@ class UserResponse(BaseModel):
 SignupResponse = UserResponse
 
 
+def _client_ip(request: Request) -> str | None:
+    host = request.client.host if request.client else None
+    if host is None:
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return host
+
+
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=8, max_length=72)
 
 
-@router.post(
-    "/signup",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+class LoginResponse(BaseModel):
+    user: UserResponse
+    csrf_token: str
+
+
+@router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     new_user = User(
         username=payload.username,
@@ -61,16 +78,30 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     return new_user
 
 
-@router.post(
-    "/login",
-    response_model=UserResponse,
-    status_code=status.HTTP_200_OK,
-)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+@router.post("/login", response_model=LoginResponse)
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    rc: redis_lib.Redis = Depends(get_redis),
+):
     user = db.query(User).filter(User.username == payload.username).first()
     if user is None or not pwd_context.verify(payload.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
-    return user
+        raise InvalidCredentials()
+
+    sessions.enforce_limit(db, rc, user_id=user.id)
+    plain_refresh, family_id = sessions.create_session(
+        db,
+        user_id=user.id,
+        user_agent=request.headers.get("user-agent"),
+        ip=_client_ip(request),
+    )
+    db.commit()
+
+    access = tokens.encode_access(uid=user.id, sid=str(family_id), role=user.role)
+    csrf_token = csrf.gen_csrf()
+    cookies.set_auth_cookies(
+        response, access=access, refresh=plain_refresh, csrf=csrf_token,
+    )
+    return {"user": user, "csrf_token": csrf_token}

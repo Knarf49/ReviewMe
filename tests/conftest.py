@@ -51,3 +51,16 @@ def redis_client():
     yield client
     client.flushdb()
     client.close()
+
+
+@pytest.fixture
+def client(db, redis_client):
+    from fastapi.testclient import TestClient
+    from app.core.db import db_dep
+    from app.core.redis_client import get_redis
+    from app.web.main import app
+    app.dependency_overrides[db_dep] = lambda: db
+    app.dependency_overrides[get_redis] = lambda: redis_client
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()

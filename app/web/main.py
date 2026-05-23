@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
-from controllers.auth import router as auth_router
-from services.auth.exceptions import register_auth_error_handler
+from app.web.controllers.auth import router as auth_router
+from app.web.services.auth.exceptions import register_auth_error_handler
 
 app = FastAPI()
 register_auth_error_handler(app)
