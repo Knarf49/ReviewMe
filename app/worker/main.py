@@ -1,8 +1,8 @@
 """Suggestion worker entrypoint.
 
-Runs once-at-boot recovery, then blocks on Redis BLPOP forever, calling
+Runs once-at-boot recovery, then blocks on Redis BRPOP forever, calling
 process_job for every popped job_id. One SQLAlchemy session per iteration
-to keep transactions short.
+to keep transactions short. Producer uses LPUSH, so BRPOP gives FIFO.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app.worker")
 
-BLPOP_TIMEOUT = 5  # seconds; lets the loop check for shutdown signals
+BRPOP_TIMEOUT = 5  # seconds; lets the loop check for shutdown signals
 _running = True
 
 
@@ -47,9 +47,9 @@ def main() -> int:
 
     while _running:
         try:
-            popped = rc.blpop(QUEUE_KEY, timeout=BLPOP_TIMEOUT)
+            popped = rc.brpop(QUEUE_KEY, timeout=BRPOP_TIMEOUT)
         except redis_lib.RedisError as e:
-            logger.exception("BLPOP failed: %s", e)
+            logger.exception("BRPOP failed: %s", e)
             time.sleep(1)
             continue
 
