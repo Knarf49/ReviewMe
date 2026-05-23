@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     TIMESTAMP,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -169,4 +170,13 @@ class SuggestionJob(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True,
+    )
+
+    __table_args__ = (
+        Index(
+            "suggestion_jobs_one_active_per_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
