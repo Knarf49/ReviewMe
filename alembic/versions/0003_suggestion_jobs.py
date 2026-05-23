@@ -91,4 +91,4 @@ def downgrade() -> None:
         "suggestion_jobs_one_active_per_user", table_name="suggestion_jobs",
     )
     op.drop_table("suggestion_jobs")
-    op.execute("DROP TYPE suggestion_status")
+    op.execute("DROP TYPE IF EXISTS suggestion_status")
