@@ -35,6 +35,22 @@ services:
       - pgadmin_data:/var/lib/pgadmin
       - ./db/pgadmin/servers.json:/pgadmin4/servers.json:ro
 
+  redis:
+    image: redis:7-alpine
+    container_name: reviewme-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   pgdata:
   pgadmin_data:
+  redis-data:
