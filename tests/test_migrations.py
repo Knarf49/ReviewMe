@@ -56,3 +56,19 @@ def test_upgrade_then_downgrade_is_clean(clean_db):
     assert "users" not in tables
     assert "threads" not in tables
     assert "messages" not in tables
+
+
+def test_upgrade_creates_refresh_sessions(clean_db):
+    _alembic("upgrade", "head")
+    insp = inspect(clean_db)
+    tables = set(insp.get_table_names())
+    assert "refresh_sessions" in tables
+
+
+def test_downgrade_drops_refresh_sessions(clean_db):
+    _alembic("upgrade", "head")
+    _alembic("downgrade", "-1")
+    insp = inspect(clean_db)
+    tables = set(insp.get_table_names())
+    assert "refresh_sessions" not in tables
+    assert {"users", "threads", "messages"}.issubset(tables)

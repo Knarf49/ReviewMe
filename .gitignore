@@ -11,3 +11,6 @@ build/
 .claude/
 .gradio_stderr.log
 .gradio_stdout.log
+
+# local utilities (not tracked)
+hash_password.py

@@ -1,6 +1,8 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -8,7 +10,9 @@ from sqlalchemy import (
     String,
     Text,
     TIMESTAMP,
+    Uuid,
 )
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -88,4 +92,41 @@ class Message(Base):
             name="messages_role_check",
         ),
         Index("idx_messages_thread_created", "thread_id", "created_at"),
+    )
+
+
+class RefreshSession(Base):
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    family_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("refresh_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip: Mapped[str | None] = mapped_column(INET, nullable=True)
+
+    __table_args__ = (
+        Index("ix_refresh_sessions_user_id", "user_id"),
+        Index("ix_refresh_sessions_family_id", "family_id"),
+        Index("ix_refresh_sessions_expires_at", "expires_at"),
     )

@@ -1,3 +1,12 @@
 sqlalchemy>=2.0
 psycopg[binary]>=3.2
 alembic>=1.13
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic[email]
+pyjwt>=2.9
+passlib[bcrypt]>=1.7.4
+bcrypt<4.1
+redis>=5.0
+python-dotenv>=1.0
