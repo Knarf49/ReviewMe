@@ -45,6 +45,40 @@ def test_login_unknown_user_401(client):
     assert r.status_code == 401
 
 
+def _login(client, username="alice", password="pass1234"):
+    r = client.post("/login", json={"username": username, "password": password})
+    assert r.status_code == 200
+    return r.json()["csrf_token"]
+
+
+def test_logout_deletes_family_and_clears_cookies(client, db, redis_client):
+    _signup(client)
+    csrf_tok = _login(client)
+    r = client.post("/logout", headers={"X-CSRF-Token": csrf_tok})
+    assert r.status_code == 204
+    db.expire_all()
+    from app.core.models import RefreshSession, User
+    user = db.query(User).filter_by(username="alice").one()
+    assert db.query(RefreshSession).filter_by(user_id=user.id).count() == 0
+    set_cookie = "\n".join(r.headers.get_list("set-cookie")).lower()
+    assert "max-age=0" in set_cookie
+
+
+def test_logout_without_csrf_403(client):
+    _signup(client)
+    _login(client)
+    r = client.post("/logout")
+    assert r.status_code == 403
+
+
+def test_logout_with_no_refresh_cookie_returns_204_anyway(client):
+    _signup(client)
+    csrf_tok = _login(client)
+    client.cookies.delete("refresh_token")
+    r = client.post("/logout", headers={"X-CSRF-Token": csrf_tok})
+    assert r.status_code == 204
+
+
 def test_login_session_limit_evicts_oldest(client, db, monkeypatch):
     monkeypatch.setenv("SESSION_LIMIT_PER_USER", "2")
     from app.web.services.auth import config

@@ -105,3 +105,28 @@ def login(
         response, access=access, refresh=plain_refresh, csrf=csrf_token,
     )
     return {"user": user, "csrf_token": csrf_token}
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    rc: redis_lib.Redis = Depends(get_redis),
+    _csrf: None = Depends(csrf.require_csrf),
+):
+    from sqlalchemy import select
+    from app.core.models import RefreshSession
+
+    plain = request.cookies.get(cookies.REFRESH_COOKIE)
+    if plain:
+        hashed = tokens.hash_refresh(plain)
+        row = db.execute(
+            select(RefreshSession).where(RefreshSession.token_hash == hashed)
+        ).scalar_one_or_none()
+        if row is not None:
+            sessions.revoke_family(db, rc, family_id=row.family_id)
+            db.commit()
+    cookies.clear_auth_cookies(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return None
