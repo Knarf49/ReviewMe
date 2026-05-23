@@ -98,6 +98,33 @@ def test_logout_with_no_refresh_cookie_returns_204_anyway(client):
     assert r.status_code == 204
 
 
+def test_me_returns_current_user_when_authenticated(client):
+    _signup(client)
+    _login(client)
+    r = client.get("/me")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "alice"
+    assert body["email"] == "alice@x.com"
+    assert "id" in body and "created_at" in body
+
+
+def test_me_401_when_no_access_token(client):
+    r = client.get("/me")
+    assert r.status_code == 401
+
+
+def test_me_401_after_logout(client):
+    _signup(client)
+    csrf_tok = _login(client)
+    client.post("/logout", headers={"X-CSRF-Token": csrf_tok})
+    # access_token cookie still in client jar (cleared via Set-Cookie max-age=0,
+    # but httpx TestClient may keep the value). Force a fresh request without it.
+    client.cookies.delete("access_token")
+    r = client.get("/me")
+    assert r.status_code == 401
+
+
 def test_refresh_happy_rotates_and_returns_new_csrf(client, db, redis_client):
     _signup(client)
     csrf_tok = _login(client)

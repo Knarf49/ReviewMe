@@ -108,6 +108,11 @@ def login(
     return {"user": user, "csrf_token": csrf_token}
 
 
+@router.get("/me", response_model=UserResponse)
+def me(user: User = Depends(get_current_user)):
+    return user
+
+
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
     request: Request,
