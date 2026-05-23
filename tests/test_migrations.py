@@ -6,8 +6,6 @@ import pytest
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect
 
-from app.core.models import Base
-
 load_dotenv()
 
 TEST_DATABASE_URL = os.environ.get(
@@ -32,12 +30,12 @@ def _alembic(*args: str) -> None:
 def clean_db():
     eng = create_engine(TEST_DATABASE_URL, pool_pre_ping=True, future=True)
     with eng.begin() as conn:
-        Base.metadata.drop_all(conn)
-        conn.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
+        conn.exec_driver_sql("DROP SCHEMA public CASCADE")
+        conn.exec_driver_sql("CREATE SCHEMA public")
     yield eng
     with eng.begin() as conn:
-        Base.metadata.drop_all(conn)
-        conn.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
+        conn.exec_driver_sql("DROP SCHEMA public CASCADE")
+        conn.exec_driver_sql("CREATE SCHEMA public")
     eng.dispose()
 
 
@@ -67,7 +65,7 @@ def test_upgrade_creates_refresh_sessions(clean_db):
 
 def test_downgrade_drops_refresh_sessions(clean_db):
     _alembic("upgrade", "head")
-    _alembic("downgrade", "-1")
+    _alembic("downgrade", "0001")
     insp = inspect(clean_db)
     tables = set(insp.get_table_names())
     assert "refresh_sessions" not in tables
