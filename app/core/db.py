@@ -30,3 +30,16 @@ def get_db() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def db_dep() -> Iterator[Session]:
+    """FastAPI dependency form (generator, not context manager).
+
+    The endpoint owns commit/rollback. This yields a session and only
+    closes it; controllers must call db.commit() explicitly.
+    """
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
