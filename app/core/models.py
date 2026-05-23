@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Enum as SAEnum,
     ForeignKey,
     Index,
     Integer,
@@ -12,7 +13,7 @@ from sqlalchemy import (
     TIMESTAMP,
     Uuid,
 )
-from sqlalchemy.dialects.postgresql import INET
+from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -129,4 +130,43 @@ class RefreshSession(Base):
         Index("ix_refresh_sessions_user_id", "user_id"),
         Index("ix_refresh_sessions_family_id", "family_id"),
         Index("ix_refresh_sessions_expires_at", "expires_at"),
+    )
+
+
+class SuggestionJob(Base):
+    __tablename__ = "suggestion_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        SAEnum(
+            "queued", "running", "done", "error",
+            name="suggestion_status",
+            create_type=False,
+        ),
+        nullable=False,
+        server_default="queued",
+    )
+    jd_text: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True,
     )
