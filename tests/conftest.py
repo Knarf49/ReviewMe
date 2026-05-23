@@ -40,3 +40,14 @@ def db(engine) -> Session:
         session.close()
         trans.rollback()
         connection.close()
+
+
+@pytest.fixture
+def redis_client():
+    import redis as _redis
+    url = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/1")
+    client = _redis.Redis.from_url(url, decode_responses=True)
+    client.flushdb()
+    yield client
+    client.flushdb()
+    client.close()
