@@ -3,10 +3,12 @@ import pytest
 
 
 def _load_config():
-    # Re-import inside test so env mutations take effect.
-    import importlib
+    # Clear the lru_cache so env mutations take effect on the next call.
+    # Do NOT importlib.reload — reload creates a new function object while
+    # other modules (e.g. sessions.py) still hold a reference to the original
+    # function, keeping a stale cache that no further cache_clear can reach.
     import app.web.services.auth.config as mod
-    importlib.reload(mod)
+    mod.get_auth_config.cache_clear()
     return mod
 
 
