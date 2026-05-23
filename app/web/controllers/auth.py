@@ -50,7 +50,7 @@ def _client_ip(request: Request) -> str | None:
 
 
 class LoginRequest(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50)
+    email: EmailStr
     password: str = Field(..., min_length=8, max_length=72)
 
 
@@ -87,7 +87,7 @@ def login(
     db: Session = Depends(get_db),
     rc: redis_lib.Redis = Depends(get_redis),
 ):
-    user = db.query(User).filter(User.username == payload.username).first()
+    user = db.query(User).filter(User.email == payload.email).first()
     if user is None or not pwd_context.verify(payload.password, user.password_hash):
         raise InvalidCredentials()
 
