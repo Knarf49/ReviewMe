@@ -36,7 +36,7 @@ from typing import Any
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from llm_client import DEFAULT_MODELS, OLLAMA_API_KEY, OLLAMA_BASE_URL
+from llm_client import DEFAULT_MODELS, OLLAMA_API_KEY, OLLAMA_BASE_URL, OPENROUTER_BASE_URL
 
 load_dotenv()
 
@@ -49,12 +49,12 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 def _resolve_provider_model(
     provider: str | None, model: str | None
 ) -> tuple[str, str]:
-    p = (provider or os.environ.get("LLM_PROVIDER") or "openai").lower().strip()
-    if p not in ("openai", "ollama"):
+    p = (provider or os.environ.get("REVIEW_LLM_PROVIDER") or os.environ.get("LLM_PROVIDER") or "openai").lower().strip()
+    if p not in ("openai", "ollama", "openrouter"):
         raise ValueError(f"Unknown LLM provider {p!r}")
     m = (model or "").strip()
     if not m:
-        env_key = "OLLAMA_MODEL" if p == "ollama" else "OPENAI_MODEL"
+        env_key = {"ollama": "OLLAMA_MODEL", "openrouter": "OPENROUTER_MODEL"}.get(p, "OPENAI_MODEL")
         m = os.environ.get(env_key) or DEFAULT_MODELS[p]
     return p, m
 
@@ -62,6 +62,11 @@ def _resolve_provider_model(
 def _build_async_client(provider: str) -> AsyncOpenAI:
     if provider == "ollama":
         return AsyncOpenAI(api_key=OLLAMA_API_KEY, base_url=OLLAMA_BASE_URL)
+    if provider == "openrouter":
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY missing.")
+        return AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError(

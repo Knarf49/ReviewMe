@@ -154,7 +154,7 @@ async def run_layer4(
     if not jd:
         raise ValueError("JD is required for Layer 4 project suggestion.")
 
-    eff_provider, eff_model = _resolve_provider_model(provider, model)
+    eff_provider, eff_model = _resolve_provider_model(provider, os.environ.get("LAYER4_MODEL") or model)
 
     start = time.time()
     try:
