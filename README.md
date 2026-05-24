@@ -49,6 +49,7 @@ the `suggestion_jobs` table. Clients poll `GET /suggestions/{job_id}`.
 |---|---|---|
 | `POST` | `/suggestions` | Enqueue a new job. Requires auth + CSRF. One active job per user. |
 | `GET` | `/suggestions/{job_id}` | Status + result. Returns 404 for unknown ids or jobs owned by another user. |
+| `DELETE` | `/suggestions/{job_id}` | Delete a job. Requires auth + CSRF. 404 if not owned. 409 if currently `running`. |
 
 ### Running locally
 

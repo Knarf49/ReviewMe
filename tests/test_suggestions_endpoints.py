@@ -161,3 +161,75 @@ def test_get_suggestion_404_when_other_user(client, db, signed_in_user):
 def test_get_suggestion_invalid_uuid(client, signed_in_user):
     r = client.get("/suggestions/not-a-uuid")
     assert r.status_code == 422
+
+
+def test_delete_suggestion_removes_queued_job(client, db, signed_in_user):
+    user, csrf = signed_in_user
+    job = SuggestionJob(
+        user_id=user.id, jd_text="JD", model="gpt-oss:20b-cloud",
+    )
+    db.add(job)
+    db.commit()
+    job_id = job.id
+
+    r = client.delete(
+        f"/suggestions/{job_id}", headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 204
+    db.expire_all()
+    assert db.get(SuggestionJob, job_id) is None
+
+
+def test_delete_suggestion_404_when_missing(client, signed_in_user):
+    _, csrf = signed_in_user
+    r = client.delete(
+        f"/suggestions/{uuid.uuid4()}", headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 404
+
+
+def test_delete_suggestion_404_when_other_user(client, db, signed_in_user):
+    _, csrf = signed_in_user
+    other = User(username="other2", email="other2@e.com", password_hash="x")
+    db.add(other)
+    db.flush()
+    job = SuggestionJob(
+        user_id=other.id, jd_text="JD", model="gpt-oss:20b-cloud",
+    )
+    db.add(job)
+    db.commit()
+
+    r = client.delete(
+        f"/suggestions/{job.id}", headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 404
+
+
+def test_delete_suggestion_409_when_running(client, db, signed_in_user):
+    user, csrf = signed_in_user
+    job = SuggestionJob(
+        user_id=user.id,
+        jd_text="JD",
+        model="gpt-oss:20b-cloud",
+        status="running",
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(job)
+    db.commit()
+
+    r = client.delete(
+        f"/suggestions/{job.id}", headers={"X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 409
+
+
+def test_delete_suggestion_requires_csrf(client, db, signed_in_user):
+    user, _ = signed_in_user
+    job = SuggestionJob(
+        user_id=user.id, jd_text="JD", model="gpt-oss:20b-cloud",
+    )
+    db.add(job)
+    db.commit()
+
+    r = client.delete(f"/suggestions/{job.id}")
+    assert r.status_code in (401, 403)

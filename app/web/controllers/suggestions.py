@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 
 import redis as redis_lib
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -120,3 +120,26 @@ def get_suggestion(
         result=row.result,
         error=row.error,
     )
+
+
+@router.delete(
+    "/suggestions/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_suggestion(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    _csrf: None = Depends(csrf.require_csrf),
+):
+    row = db.get(SuggestionJob, job_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if row.status == "running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="cannot delete running job",
+        )
+    db.delete(row)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
