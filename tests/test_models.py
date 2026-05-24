@@ -162,3 +162,28 @@ def test_get_db_round_trip():
 
     with get_db() as session:
         session.execute(text("SELECT 1"))
+
+
+def test_suggestion_job_round_trip(db):
+    from app.core.models import SuggestionJob, User
+
+    user = User(
+        username="sj_user",
+        email="sj@example.com",
+        password_hash="x",
+    )
+    db.add(user)
+    db.flush()
+
+    job = SuggestionJob(
+        user_id=user.id,
+        jd_text="Backend engineer",
+        model="gpt-oss:20b-cloud",
+    )
+    db.add(job)
+    db.flush()
+
+    assert job.id is not None
+    assert job.status == "queued"
+    assert job.result is None
+    assert job.created_at is not None

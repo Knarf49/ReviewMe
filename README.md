@@ -36,6 +36,38 @@ JWT access (2h) + opaque refresh (14d, rotation + reuse detection) in
 HttpOnly cookies. Redis-backed instant revocation. Max 5 sessions per user
 (oldest evicted on login). See `docs/superpowers/specs/2026-05-23-token-strategy-design.md`.
 
+## Suggestions queue
+
+`POST /suggestions` runs Layer 4 (project suggester) asynchronously. The
+request returns immediately with a `job_id`; a background worker picks
+up the job from Redis, runs `run_layer4_sync`, and writes the result to
+the `suggestion_jobs` table. Clients poll `GET /suggestions/{job_id}`.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/suggestions` | Enqueue a new job. Requires auth + CSRF. One active job per user. |
+| `GET` | `/suggestions/{job_id}` | Status + result. Returns 404 for unknown ids or jobs owned by another user. |
+
+### Running locally
+
+```bash
+docker compose up -d --build
+```
+
+Brings up `postgres`, `redis`, `pgadmin`, `web`, and `worker`. Logs:
+
+```bash
+docker compose logs worker -f
+```
+
+### Crash recovery
+
+The worker, at startup, resets `running` jobs older than 10 minutes back
+to `queued` and re-enqueues every `queued` row to Redis. Layer 4 has no
+side effects, so retries are safe.
+
 ## Local-only run (without containerizing web)
 
 If you prefer to run the web server on the host (faster iteration on Python
