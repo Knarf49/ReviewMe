@@ -30,7 +30,7 @@ def test_post_suggestions_creates_queued_job(
     user, csrf = signed_in_user
     r = client.post(
         "/suggestions",
-        json={"jd_text": "Backend engineer", "model": "gpt-oss:20b-cloud"},
+        json={"jd_text": "Backend engineer"},
         headers={"X-CSRF-Token": csrf},
     )
     assert r.status_code == 201
@@ -48,7 +48,7 @@ def test_post_suggestions_creates_queued_job(
 def test_post_suggestions_requires_auth(client):
     r = client.post(
         "/suggestions",
-        json={"jd_text": "JD", "model": "gpt-oss:20b-cloud"},
+        json={"jd_text": "JD"},
     )
     assert r.status_code == 401
 
@@ -57,7 +57,7 @@ def test_post_suggestions_rejects_active_job(
     client, db, redis_client, signed_in_user,
 ):
     _, csrf = signed_in_user
-    body = {"jd_text": "JD", "model": "gpt-oss:20b-cloud"}
+    body = {"jd_text": "JD"}
     headers = {"X-CSRF-Token": csrf}
     first = client.post("/suggestions", json=body, headers=headers)
     assert first.status_code == 201
@@ -71,20 +71,11 @@ def test_post_suggestions_empty_jd_rejected(client, signed_in_user):
     _, csrf = signed_in_user
     r = client.post(
         "/suggestions",
-        json={"jd_text": "", "model": "gpt-oss:20b-cloud"},
+        json={"jd_text": ""},
         headers={"X-CSRF-Token": csrf},
     )
     assert r.status_code == 422
 
-
-def test_post_suggestions_invalid_model_rejected(client, signed_in_user):
-    _, csrf = signed_in_user
-    r = client.post(
-        "/suggestions",
-        json={"jd_text": "JD", "model": "not-a-model"},
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert r.status_code == 422
 
 
 def test_get_suggestion_returns_queued_state(

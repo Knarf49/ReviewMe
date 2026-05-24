@@ -55,7 +55,7 @@ def test_full_enqueue_process_poll_flow(
     # 1. Enqueue
     r = client.post(
         "/suggestions",
-        json={"jd_text": "Backend", "model": "gpt-oss:20b-cloud"},
+        json={"jd_text": "Backend"},
         headers={"X-CSRF-Token": csrf},
     )
     assert r.status_code == 201

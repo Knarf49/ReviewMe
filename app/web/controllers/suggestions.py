@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from enum import Enum
 
 import redis as redis_lib
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -17,19 +16,13 @@ from app.web.services.auth import csrf
 from app.web.services.auth.dependencies import get_current_user
 from app.web.services.queue import enqueue_suggestion
 
-
-class Model(str, Enum):
-    gpt_oss_20b = "gpt-oss:20b-cloud"
-    gpt_oss_120b = "gpt-oss:120b-cloud"
-    gpt_5_4_mini = "gpt-5.4-mini"
-
+_DEFAULT_MODEL = "gpt-oss:20b-cloud"
 
 router = APIRouter(tags=["suggestions"])
 
 
 class SuggestionsRequest(BaseModel):
     jd_text: str = Field(..., min_length=1)
-    model: Model
 
 
 class EnqueueResponse(BaseModel):
@@ -53,7 +46,7 @@ def post_suggestions(
             db, rc,
             user_id=user.id,
             jd_text=payload.jd_text,
-            model=payload.model.value,
+            model=_DEFAULT_MODEL,
         )
         db.commit()
     except IntegrityError:
